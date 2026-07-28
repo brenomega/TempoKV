@@ -20,9 +20,15 @@ public final class MetricsRegistry {
 
     /** Increments the named counter and returns its current approximate value. */
     public long incrementCounter(String name) {
+        return addCounter(name, 1);
+    }
+
+    /** Adds a non-negative delta to a counter and returns its current approximate value. */
+    public long addCounter(String name, long delta) {
+        if (delta < 0) throw new IllegalArgumentException("Counter delta must not be negative");
         String metricName = validateName(name);
         LongAdder counter = counters.computeIfAbsent(metricName, ignored -> new LongAdder());
-        counter.increment();
+        counter.add(delta);
         return counter.sum();
     }
 

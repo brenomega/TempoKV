@@ -3,6 +3,8 @@ package io.tempokv.protocol.resp;
 import io.tempokv.application.AdminCommand;
 import io.tempokv.application.Command;
 import io.tempokv.application.KeyValueCommand;
+import io.tempokv.application.TemporalCommand;
+import java.time.Instant;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Locale;
@@ -25,6 +27,10 @@ public final class RespCommandMapper {
             case "DEL" -> KeyValueCommand.del(key(values, 2));
             case "EXPIRE" -> KeyValueCommand.expire(key(values, 3), seconds(argument(values, 2)));
             case "TTL" -> KeyValueCommand.ttl(key(values, 2));
+            case "GETAT" -> getAt(values);
+            case "HISTORY" -> history(values);
+            case "DIFF" -> diff(values);
+            case "RESTOREAT" -> TemporalCommand.restoreAt(key(values, 3), version(argument(values, 2)));
             default -> throw new CommandMappingException("ERR unsupported command " + command);
         };
     }
@@ -53,6 +59,48 @@ public final class RespCommandMapper {
         } catch (NumberFormatException exception) {
             throw new CommandMappingException("ERR value is not an integer or out of range");
         }
+    }
+
+    /** Maps GETAT key VERSION version or GETAT key TIMESTAMP ISO-8601-instant. */
+    private static TemporalCommand getAt(List<RespFrame> values) throws CommandMappingException {
+        if (values.size() != 4) throw new CommandMappingException("ERR wrong number of arguments for command");
+        String type = new String(argument(values, 2), StandardCharsets.US_ASCII).toUpperCase(Locale.ROOT);
+        return switch (type) {
+            case "VERSION" -> TemporalCommand.getAtVersion(key(values, 4), version(argument(values, 3)));
+            case "TIMESTAMP" -> TemporalCommand.getAtTimestamp(key(values, 4), timestamp(argument(values, 3)));
+            default -> throw new CommandMappingException("ERR GETAT selector must be VERSION or TIMESTAMP");
+        };
+    }
+
+    /** Maps HISTORY key with optional offset and bounded limit. */
+    private static TemporalCommand history(List<RespFrame> values) throws CommandMappingException {
+        if (values.size() < 2 || values.size() > 4) throw new CommandMappingException("ERR wrong number of arguments for command");
+        String key = key(values, values.size());
+        int offset = values.size() >= 3 ? pageNumber(argument(values, 2), "offset") : 0;
+        int limit = values.size() == 4 ? pageNumber(argument(values, 3), "limit") : 100;
+        return TemporalCommand.history(key, offset, limit);
+    }
+
+    /** Maps DIFF key version-one version-two. */
+    private static TemporalCommand diff(List<RespFrame> values) throws CommandMappingException {
+        if (values.size() != 4) throw new CommandMappingException("ERR wrong number of arguments for command");
+        return TemporalCommand.diff(key(values, 4), TemporalCommand.Selector.version(version(argument(values, 2))), TemporalCommand.Selector.version(version(argument(values, 3))));
+    }
+
+    private static long version(byte[] value) throws CommandMappingException {
+        long result = seconds(value);
+        if (result < 1) throw new CommandMappingException("ERR version must be positive");
+        return result;
+    }
+
+    private static Instant timestamp(byte[] value) throws CommandMappingException {
+        try { return Instant.parse(new String(value, StandardCharsets.US_ASCII)); }
+        catch (RuntimeException exception) { throw new CommandMappingException("ERR timestamp must be ISO-8601 UTC"); }
+    }
+
+    private static int pageNumber(byte[] value, String name) throws CommandMappingException {
+        try { return Math.toIntExact(seconds(value)); }
+        catch (ArithmeticException exception) { throw new CommandMappingException("ERR " + name + " is out of range"); }
     }
 
     /** Reports a syntactically valid but unsupported client request. */

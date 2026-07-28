@@ -3,17 +3,21 @@ package io.tempokv.storage;
 import io.tempokv.transaction.CommitCoordinator;
 import io.tempokv.transaction.Mutation;
 import io.tempokv.transaction.VersionGenerator;
+import io.tempokv.transaction.CommitRecord;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** Verifies the E3 MVCC visibility and history invariants with a deterministic clock. */
 class MvccStoreTest {
@@ -48,6 +52,125 @@ class MvccStoreTest {
         assertTrue(store.get("key", NOW.plusSeconds(10)).isEmpty());
         assertEquals(-2, store.ttl("key", NOW.plusSeconds(10)));
         assertEquals(2, store.history("key").size());
+    }
+
+    /** Selects the newest commit when timestamps are equal and respects historical TTL boundaries. */
+    @Test
+    void resolvesEqualTimestampsAndHistoricalExpiration() {
+        MvccStore store = new MvccStore();
+        store.apply(new CommitRecord(
+                1, NOW, List.of(Mutation.put("key", bytes("v1")))));
+        store.apply(new CommitRecord(
+                2, NOW, List.of(Mutation.put("key", bytes("v2")))));
+        store.apply(new CommitRecord(
+                3,
+                NOW.plusSeconds(5),
+                List.of(Mutation.expire("key", NOW.plusSeconds(10)))));
+
+        assertArrayEquals(
+                bytes("v2"),
+                store.historical("key", null, NOW).value().value());
+        assertTrue(store.historical(
+                "key", null, NOW.plusSeconds(10)).value().expiresAt()
+                .equals(NOW.plusSeconds(10)));
+        assertFalse(store.historical(
+                        "key", null, NOW.plusSeconds(10))
+                .value()
+                .isVisibleAt(NOW.plusSeconds(10)));
+    }
+
+    /** Rejects an invalid repeated-key commit without publishing its first mutation. */
+    @Test
+    void doesNotPartiallyPublishInvalidCommit() {
+        MvccStore store = new MvccStore();
+        CommitRecord invalid = new CommitRecord(
+                1,
+                NOW,
+                List.of(
+                        Mutation.put("key", bytes("v1")),
+                        Mutation.put("key", bytes("v2"))));
+
+        assertThrows(IllegalArgumentException.class, () -> store.apply(invalid));
+        assertTrue(store.get("key", NOW).isEmpty());
+    }
+
+    /** Preserves monotonic lookup invariants across a deep immutable version chain. */
+    @Test
+    void preservesVersionLookupPropertyAcrossManyWrites() {
+        MvccStore store = new MvccStore();
+        for (long version = 1; version <= 200; version++) {
+            store.apply(new CommitRecord(
+                    version,
+                    NOW.plusSeconds(version),
+                    List.of(Mutation.put("key", bytes("v" + version)))));
+        }
+
+        for (long version = 1; version <= 200; version++) {
+            assertArrayEquals(
+                    bytes("v" + version),
+                    store.historical("key", version, null).value().value());
+        }
+        assertEquals(
+                200L,
+                store.history("key").getFirst().version());
+    }
+
+    /** Keeps current reads valid while another thread repeatedly publishes a new immutable head. */
+    @Test
+    void readsRemainConsistentDuringConcurrentHeadPublication() throws Exception {
+        MvccStore store = new MvccStore();
+        store.apply(new CommitRecord(
+                1, NOW, List.of(Mutation.put("key", bytes("v1")))));
+        CountDownLatch start = new CountDownLatch(1);
+        ConcurrentLinkedQueue<Throwable> failures =
+                new ConcurrentLinkedQueue<>();
+        Thread writer = Thread.ofVirtual().start(() -> {
+            try {
+                start.await();
+                for (long version = 2; version <= 500; version++) {
+                    store.apply(new CommitRecord(
+                            version,
+                            NOW.plusSeconds(version),
+                            List.of(Mutation.put(
+                                    "key", bytes("v" + version)))));
+                }
+            } catch (Throwable failure) {
+                failures.add(failure);
+            }
+        });
+        List<Thread> readers = java.util.stream.IntStream.range(0, 4)
+                .mapToObj(index -> Thread.ofVirtual().start(() -> {
+                    try {
+                        start.await();
+                        for (int read = 0; read < 2_000; read++) {
+                            String value = new String(
+                                    store.get(
+                                                    "key",
+                                                    NOW.plusSeconds(2_000))
+                                            .orElseThrow()
+                                            .value(),
+                                    StandardCharsets.UTF_8);
+                            if (!value.startsWith("v")) {
+                                throw new AssertionError(
+                                        "Observed malformed head: " + value);
+                            }
+                            if ((read & 63) == 0) Thread.yield();
+                        }
+                    } catch (Throwable failure) {
+                        failures.add(failure);
+                    }
+                }))
+                .toList();
+        start.countDown();
+        writer.join();
+        for (Thread reader : readers) reader.join();
+
+        assertTrue(failures.isEmpty(), () -> "Concurrent failures: " + failures);
+        assertArrayEquals(
+                bytes("v500"),
+                store.get("key", NOW.plusSeconds(2_000))
+                        .orElseThrow()
+                        .value());
     }
 
     private static byte[] bytes(String value) { return value.getBytes(StandardCharsets.UTF_8); }

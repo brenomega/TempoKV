@@ -7,6 +7,11 @@ public record AdminCommand(Kind kind) implements Command {
     /** Supported administrative operations for the RESP endpoint. */
     public enum Kind { PING }
 
+    /** Rejects an administrative command without a concrete operation. */
+    public AdminCommand {
+        kind = java.util.Objects.requireNonNull(kind, "kind");
+    }
+
     /** Returns the normalized protocol command name. */
     @Override
     public String name() {

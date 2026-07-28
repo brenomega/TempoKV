@@ -16,6 +16,9 @@ public record KeyValueCommand(Kind kind, String key, byte[] value, long expirati
         if (kind == Kind.SET && value == null) throw new IllegalArgumentException("SET requires a value");
         if (kind != Kind.SET && value != null) throw new IllegalArgumentException(kind + " does not accept a value");
         if (kind == Kind.EXPIRE && expirationSeconds < 0) throw new IllegalArgumentException("EXPIRE seconds must not be negative");
+        if (kind != Kind.EXPIRE && expirationSeconds != 0) {
+            throw new IllegalArgumentException(kind + " does not accept expiration seconds");
+        }
     }
 
     /** Creates a GET command. */

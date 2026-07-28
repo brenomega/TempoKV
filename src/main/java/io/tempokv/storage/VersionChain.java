@@ -14,6 +14,17 @@ public final class VersionChain {
 
     private VersionChain(List<VersionedValue> versions) { this.versions = versions; }
 
+    /** Rebuilds a chain from an already validated newest-first retained prefix. */
+    public static VersionChain fromNewestFirst(List<VersionedValue> versions) {
+        List<VersionedValue> copy = List.copyOf(Objects.requireNonNull(versions, "versions"));
+        for (int index = 1; index < copy.size(); index++) {
+            if (copy.get(index - 1).version() <= copy.get(index).version()) {
+                throw new IllegalArgumentException("Versions must be strictly newest-first");
+            }
+        }
+        return new VersionChain(copy);
+    }
+
     /** Returns a new chain with the supplied newer version prepended. */
     public VersionChain append(VersionedValue value) {
         Objects.requireNonNull(value, "value");
@@ -31,6 +42,27 @@ public final class VersionChain {
         VersionedValue head = versions.getFirst();
         return head.isVisibleAt(instant) ? Optional.of(head) : Optional.empty();
     }
+
+    /** Selects the newest version at or before a requested commit version. */
+    public Optional<VersionedValue> atVersion(long version) {
+        if (version < 1) throw new IllegalArgumentException("Version must be positive");
+        return versions.stream().filter(candidate -> candidate.version() <= version).findFirst();
+    }
+
+    /** Selects the newest version committed at or before a requested instant. */
+    public Optional<VersionedValue> atTimestamp(Instant timestamp) {
+        Objects.requireNonNull(timestamp, "timestamp");
+        return versions.stream().filter(candidate -> !candidate.committedAt().isAfter(timestamp)).findFirst();
+    }
+
+    /** Returns a chain retaining the supplied newest-first versions. */
+    public VersionChain retain(java.util.function.Predicate<VersionedValue> retained) {
+        Objects.requireNonNull(retained, "retained");
+        return new VersionChain(versions.stream().filter(retained).toList());
+    }
+
+    /** Returns the oldest retained version, when one exists. */
+    public Optional<VersionedValue> oldest() { return versions.isEmpty() ? Optional.empty() : Optional.of(versions.getLast()); }
 
     /** Returns an immutable newest-first history for later temporal operations. */
     public List<VersionedValue> versions() { return versions; }

@@ -1,40 +1,49 @@
 package io.tempokv.server;
 
-import io.tempokv.application.AdminCommandHandler;
 import io.tempokv.application.CommandDispatcher;
-import io.tempokv.application.CommandValidator;
-import io.tempokv.application.KeyValueCommandHandler;
 import io.tempokv.observability.MetricsRegistry;
 import io.tempokv.security.AccessController;
 import io.tempokv.security.Authenticator;
-import io.tempokv.storage.MvccStore;
-import io.tempokv.storage.StorageEngine;
-import io.tempokv.transaction.CommitCoordinator;
-import io.tempokv.transaction.VersionGenerator;
-import java.time.Clock;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.channels.ServerSocketChannel;
-import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 
-/** Exposes the RESP TCP endpoint and delegates connection processing to the NIO event loop. */
+/** Exposes RESP over TCP without constructing application or storage components. */
 public final class RespServer implements AutoCloseable {
     private final int port;
     private final MetricsRegistry metrics;
-    private final StorageEngine storage;
-    private final Clock clock;
+    private final CommandDispatcher dispatcher;
+    private final Authenticator authenticator;
+    private final AccessController accessController;
     private final AtomicLong activeConnections = new AtomicLong();
     private ServerSocketChannel socket;
     private NioEventLoop eventLoop;
 
-    /** Creates the RESP endpoint with an in-memory MVCC store. */
-    public RespServer(int port, MetricsRegistry metrics) { this(port, metrics, new MvccStore(), Clock.systemUTC()); }
+    /** Creates an endpoint over an already-composed dispatcher using permissive E2 security. */
+    public RespServer(
+            int port, MetricsRegistry metrics, CommandDispatcher dispatcher) {
+        this(
+                port,
+                metrics,
+                dispatcher,
+                Authenticator.permissive(),
+                AccessController.permissive());
+    }
 
-    /** Creates the RESP endpoint over the supplied protocol-independent storage port. */
-    public RespServer(int port, MetricsRegistry metrics, StorageEngine storage, Clock clock) {
-        this.port = port; this.metrics = Objects.requireNonNull(metrics, "metrics"); this.storage = Objects.requireNonNull(storage, "storage"); this.clock = Objects.requireNonNull(clock, "clock");
+    /** Creates an endpoint over explicit application and security dependencies. */
+    public RespServer(
+            int port,
+            MetricsRegistry metrics,
+            CommandDispatcher dispatcher,
+            Authenticator authenticator,
+            AccessController accessController) {
+        this.port = port;
+        this.metrics = Objects.requireNonNull(metrics, "metrics");
+        this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
+        this.authenticator = Objects.requireNonNull(authenticator, "authenticator");
+        this.accessController = Objects.requireNonNull(accessController, "accessController");
     }
 
     /** Binds the socket and starts serving RESP clients. */
@@ -43,28 +52,57 @@ public final class RespServer implements AutoCloseable {
         socket = ServerSocketChannel.open();
         try {
             socket.bind(new InetSocketAddress("127.0.0.1", port));
-            CommandDispatcher dispatcher = new CommandDispatcher(new CommandValidator(), List.of(
-                    new AdminCommandHandler(metrics),
-                    new KeyValueCommandHandler(storage, new CommitCoordinator(new VersionGenerator(), storage, clock), clock, metrics)));
-            eventLoop = new NioEventLoop();
+            eventLoop = new NioEventLoop(
+                    ignored -> metrics.incrementCounter(
+                            "resp.event_loop_failures"));
             eventLoop.start(socket, channel -> {
                 metrics.incrementCounter("resp.connections");
-                metrics.setGauge("resp.connections_active", activeConnections.incrementAndGet());
-                return new ClientConnection(channel, new RespConnectionHandler(Authenticator.permissive(), AccessController.permissive(), dispatcher, metrics),
-                        () -> metrics.setGauge("resp.connections_active", activeConnections.decrementAndGet()));
+                metrics.setGauge(
+                        "resp.connections_active", activeConnections.incrementAndGet());
+                return new ClientConnection(
+                        channel,
+                        new RespConnectionHandler(
+                                authenticator,
+                                accessController,
+                                dispatcher,
+                                metrics),
+                        () -> metrics.setGauge(
+                                "resp.connections_active",
+                                activeConnections.decrementAndGet()));
             });
-        } catch (IOException | RuntimeException exception) { close(); throw exception; }
+        } catch (IOException | RuntimeException exception) {
+            close();
+            throw exception;
+        }
     }
 
     /** Returns the TCP port actually bound by this endpoint. */
-    public synchronized int port() throws IOException { if (socket == null) throw new IOException("RESP server is not started"); return ((InetSocketAddress) socket.getLocalAddress()).getPort(); }
+    public synchronized int port() throws IOException {
+        if (socket == null) throw new IOException("RESP server is not started");
+        return ((InetSocketAddress) socket.getLocalAddress()).getPort();
+    }
+
     /** Returns whether the endpoint is accepting connections. */
-    public synchronized boolean isRunning() { return eventLoop != null && eventLoop.isRunning(); }
+    public synchronized boolean isRunning() {
+        return eventLoop != null && eventLoop.isRunning();
+    }
+
     /** Stops the selector and releases the listening socket. */
     @Override public synchronized void close() throws IOException {
         IOException failure = null;
-        if (eventLoop != null) try { eventLoop.close(); } catch (IOException exception) { failure = exception; }
-        else if (socket != null) try { socket.close(); } catch (IOException exception) { failure = exception; }
+        if (eventLoop != null) {
+            try {
+                eventLoop.close();
+            } catch (IOException exception) {
+                failure = exception;
+            }
+        } else if (socket != null) {
+            try {
+                socket.close();
+            } catch (IOException exception) {
+                failure = exception;
+            }
+        }
         eventLoop = null;
         socket = null;
         if (failure != null) throw failure;

@@ -8,15 +8,27 @@ import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Iterator;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 /** Runs a single non-blocking selector loop without protocol or command semantics. */
 public final class NioEventLoop implements AutoCloseable {
     private final Selector selector;
     private final Thread thread;
+    private final Consumer<Throwable> failureHandler;
     private volatile boolean running;
 
     /** Creates an event loop that is started by {@link #start(ServerSocketChannel, ConnectionFactory)}. */
-    public NioEventLoop() throws IOException { selector = Selector.open(); thread = new Thread(this::run, "tempokv-nio"); }
+    public NioEventLoop() throws IOException {
+        this(ignored -> { });
+    }
+
+    /** Creates an event loop that reports failures not caused by normal shutdown. */
+    public NioEventLoop(Consumer<Throwable> failureHandler) throws IOException {
+        selector = Selector.open();
+        this.failureHandler =
+                Objects.requireNonNull(failureHandler, "failureHandler");
+        thread = new Thread(this::run, "tempokv-nio");
+    }
 
     /** Registers the listening socket and begins serving accepted connections. */
     public synchronized void start(ServerSocketChannel server, ConnectionFactory factory) throws IOException {
@@ -36,8 +48,8 @@ public final class NioEventLoop implements AutoCloseable {
                 Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
                 while (keys.hasNext()) { SelectionKey key = keys.next(); keys.remove(); process(key); }
             }
-        } catch (IOException | ClosedSelectorException ignored) {
-            // Shutdown closes the selector; an individual client failure is isolated in process.
+        } catch (IOException | ClosedSelectorException exception) {
+            if (running) failureHandler.accept(exception);
         } finally { running = false; }
     }
 
@@ -53,21 +65,38 @@ public final class NioEventLoop implements AutoCloseable {
     private void accept(SelectionKey key) throws IOException {
         ServerSocketChannel server = (ServerSocketChannel) key.channel(); SocketChannel socket;
         while ((socket = server.accept()) != null) {
-            socket.configureBlocking(false);
-            ClientConnection connection = ((ConnectionFactory) key.attachment()).create(socket);
-            socket.register(selector, SelectionKey.OP_READ, connection);
+            try {
+                socket.configureBlocking(false);
+                ClientConnection connection =
+                        ((ConnectionFactory) key.attachment()).create(socket);
+                socket.register(selector, SelectionKey.OP_READ, connection);
+            } catch (IOException | RuntimeException exception) {
+                try {
+                    socket.close();
+                } catch (IOException closeFailure) {
+                    exception.addSuppressed(closeFailure);
+                }
+            }
         }
     }
 
     private static void read(SelectionKey key) throws IOException {
         ClientConnection connection = (ClientConnection) key.attachment();
         if (!connection.read()) { key.cancel(); return; }
-        if (connection.write()) key.interestOps(SelectionKey.OP_READ | SelectionKey.OP_WRITE);
+        updateInterest(key, connection, connection.write());
     }
 
     private static void write(SelectionKey key) throws IOException {
         ClientConnection connection = (ClientConnection) key.attachment();
-        if (!connection.write()) key.interestOps(SelectionKey.OP_READ);
+        updateInterest(key, connection, connection.write());
+    }
+
+    /** Applies write readiness and pauses reads above the connection high-water mark. */
+    private static void updateInterest(
+            SelectionKey key, ClientConnection connection, boolean pendingWrites) {
+        int operations = pendingWrites ? SelectionKey.OP_WRITE : 0;
+        if (connection.acceptsReads()) operations |= SelectionKey.OP_READ;
+        key.interestOps(operations);
     }
 
     private static void closeKey(SelectionKey key) {

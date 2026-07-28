@@ -1,6 +1,9 @@
+import org.gradle.testing.jacoco.tasks.JacocoReport
+
 plugins {
     java
     application
+    jacoco
 }
 
 group = "io.tempokv"
@@ -55,6 +58,21 @@ val integrationTestTask = tasks.register<Test>("integrationTest") {
 
 tasks.check {
     dependsOn(integrationTestTask)
+    dependsOn("jacocoAllReport")
+}
+
+tasks.register<JacocoReport>("jacocoAllReport") {
+    description = "Generates combined unit and integration coverage."
+    group = LifecycleBasePlugin.VERIFICATION_GROUP
+    dependsOn(tasks.test, integrationTestTask)
+    executionData(fileTree(layout.buildDirectory.dir("jacoco")) {
+        include("*.exec")
+    })
+    sourceSets(sourceSets.main.get())
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+    }
 }
 
 tasks.jar {

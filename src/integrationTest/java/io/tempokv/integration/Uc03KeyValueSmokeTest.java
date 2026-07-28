@@ -14,14 +14,14 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/** Exercises UC-03 through the public server, RESP mapping, commit pipeline, and MVCC storage. */
-class Uc03KeyValueIntegrationTest {
+/** Smoke-tests UC-03 through the public server, RESP mapping, commit pipeline, and MVCC storage. */
+class Uc03KeyValueSmokeTest {
     @TempDir
     Path temporaryDirectory;
 
     /** Preserves the RESP response order while mixing current-state writes, reads, deletion, and expiration. */
     @Test
-    void executesPipelinedKeyValueLifecycleWithPassiveExpiration() throws Exception {
+    void smokeTestExecutesKeyValueLifecycleWithPassiveExpiration() throws Exception {
         Ports ports = availablePorts();
         TempoKvServer server = TempoKvApplication.bootstrap(new String[]{
                 "--data-dir=" + temporaryDirectory.resolve("data"),

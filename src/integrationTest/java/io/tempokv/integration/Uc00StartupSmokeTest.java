@@ -24,16 +24,16 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Exercises UC-00 through the public application bootstrap and real filesystem locks.
+ * Smoke-tests UC-00 through the public application bootstrap and real filesystem locks.
  */
-class Uc00StartupIntegrationTest {
+class Uc00StartupSmokeTest {
 
     @TempDir
     Path temporaryDirectory;
 
     /** Starts with an empty directory and releases resources for a later startup. */
     @Test
-    void startsAndShutsDownAgainstEmptyDirectory() throws Exception {
+    void smokeTestStartsAndShutsDownAgainstEmptyDirectory() throws Exception {
         Path dataDirectory = temporaryDirectory.resolve("data");
         TempoKvServer first = TempoKvApplication.bootstrap(
                 serverArguments(dataDirectory), Map.of());
@@ -62,9 +62,8 @@ class Uc00StartupIntegrationTest {
     }
 
     /** Starts the executable JAR and verifies its shutdown hook releases the data lock. */
-    // SmokeTest
     @Test
-    void startsExecutableJarAndReleasesLockOnShutdownSignal() throws Exception {
+    void smokeTestStartsExecutableJarAndReleasesLockOnShutdownSignal() throws Exception {
         Path dataDirectory = temporaryDirectory.resolve("jar-data");
         Process process = new ProcessBuilder(jarCommand(dataDirectory))
                 .redirectErrorStream(true)

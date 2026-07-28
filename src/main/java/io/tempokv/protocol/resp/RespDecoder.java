@@ -9,6 +9,8 @@ import java.util.List;
 /** Decodes complete RESP2 frames while retaining incomplete bytes for a later read. */
 public final class RespDecoder {
     private static final int MAX_FRAME_BYTES = 16 * 1024 * 1024;
+    private static final int MAX_ARRAY_ELEMENTS = 1_000_000;
+    private static final int MAX_NESTING_DEPTH = 128;
     private final ByteArrayOutputStream pending = new ByteArrayOutputStream();
 
     /** Adds received bytes and returns every complete frame in wire order. */
@@ -19,7 +21,7 @@ public final class RespDecoder {
         int offset = 0;
         List<RespFrame> frames = new ArrayList<>();
         while (offset < input.length) {
-            ParseResult parsed = parse(input, offset);
+            ParseResult parsed = parse(input, offset, 0);
             if (parsed == null) break;
             frames.add(parsed.frame());
             offset = parsed.nextOffset();
@@ -32,14 +34,17 @@ public final class RespDecoder {
     /** Returns whether a partial frame is waiting for additional bytes. */
     public boolean hasPendingBytes() { return pending.size() > 0; }
 
-    private static ParseResult parse(byte[] input, int offset) throws ProtocolException {
+    private static ParseResult parse(byte[] input, int offset, int depth) throws ProtocolException {
         if (offset >= input.length) return null;
+        if (depth > MAX_NESTING_DEPTH) {
+            throw new ProtocolException("ERR RESP nesting exceeds 128 levels");
+        }
         return switch ((char) input[offset]) {
             case '+' -> lineFrame(input, offset, RespFrame.SimpleString::new);
             case '-' -> lineFrame(input, offset, RespFrame.Error::new);
             case ':' -> integerFrame(input, offset);
             case '$' -> bulkFrame(input, offset);
-            case '*' -> arrayFrame(input, offset);
+            case '*' -> arrayFrame(input, offset, depth);
             default -> throw new ProtocolException("ERR invalid RESP type byte");
         };
     }
@@ -70,16 +75,19 @@ public final class RespDecoder {
         return new ParseResult(new RespFrame.BulkString(Arrays.copyOfRange(input, line.nextOffset(), line.nextOffset() + length)), (int) end);
     }
 
-    private static ParseResult arrayFrame(byte[] input, int offset) throws ProtocolException {
+    private static ParseResult arrayFrame(byte[] input, int offset, int depth) throws ProtocolException {
         Line line = line(input, offset + 1);
         if (line == null) return null;
         int count = length(line.value());
         if (count == -1) return new ParseResult(new RespFrame.NullValue(), line.nextOffset());
         if (count < 0) throw new ProtocolException("ERR invalid array length");
+        if (count > MAX_ARRAY_ELEMENTS) {
+            throw new ProtocolException("ERR RESP array exceeds 1000000 elements");
+        }
         List<RespFrame> values = new ArrayList<>(count);
         int current = line.nextOffset();
         for (int i = 0; i < count; i++) {
-            ParseResult item = parse(input, current);
+            ParseResult item = parse(input, current, depth + 1);
             if (item == null) return null;
             values.add(item.frame()); current = item.nextOffset();
         }

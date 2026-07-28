@@ -40,6 +40,32 @@ class RespProtocolTest {
                 () -> new RespDecoder().feed("+PING\n".getBytes(StandardCharsets.US_ASCII)));
     }
 
+    /** Encodes nested collection results used by HISTORY and DIFF canonically. */
+    @Test
+    void encodesNestedTemporalResults() {
+        CommandResult.Array result = new CommandResult.Array(List.of(
+                new CommandResult.IntegerValue(2),
+                new CommandResult.Array(List.of(
+                        CommandResult.simpleString("VALUE"),
+                        new CommandResult.BulkString(
+                                "data".getBytes(StandardCharsets.US_ASCII))))));
+
+        assertArrayEquals(
+                "*2\r\n:2\r\n*2\r\n+VALUE\r\n$4\r\ndata\r\n"
+                        .getBytes(StandardCharsets.US_ASCII),
+                new RespEncoder().encode(result));
+    }
+
+    /** Rejects recursively nested arrays before parser recursion can exhaust the stack. */
+    @Test
+    void rejectsExcessiveNesting() {
+        String frame = "*1\r\n".repeat(130) + "$1\r\nx\r\n";
+        assertThrows(
+                RespDecoder.ProtocolException.class,
+                () -> new RespDecoder().feed(
+                        frame.getBytes(StandardCharsets.US_ASCII)));
+    }
+
     private static String commandName(RespFrame frame) {
         RespFrame.Array array = (RespFrame.Array) frame;
         return new String(((RespFrame.BulkString) array.values().getFirst()).value(), StandardCharsets.US_ASCII);

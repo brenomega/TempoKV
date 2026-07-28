@@ -7,7 +7,7 @@ import java.util.Objects;
  * Defines a protocol-neutral result that a front end can encode for its client.
  */
 public sealed interface CommandResult permits CommandResult.SimpleString, CommandResult.Error,
-        CommandResult.IntegerValue, CommandResult.BulkString, CommandResult.NullValue {
+        CommandResult.IntegerValue, CommandResult.BulkString, CommandResult.NullValue, CommandResult.Array {
     /** Returns a successful simple string result. */
     static SimpleString simpleString(String value) {
         return new SimpleString(value);
@@ -18,27 +18,33 @@ public sealed interface CommandResult permits CommandResult.SimpleString, Comman
         return new Error(message);
     }
 
-    /** Represents a RESP simple string. */
+    /** Represents a successful short textual status. */
     record SimpleString(String value) implements CommandResult {
         public SimpleString { value = requireLine(value, "value"); }
     }
 
-    /** Represents a RESP error. */
+    /** Represents a client-safe application error. */
     record Error(String message) implements CommandResult {
         public Error { message = requireLine(message, "message"); }
     }
 
-    /** Represents a RESP integer. */
+    /** Represents an integral application result. */
     record IntegerValue(long value) implements CommandResult { }
 
-    /** Represents a binary-safe RESP bulk string. */
+    /** Represents a binary-safe application value. */
     record BulkString(byte[] value) implements CommandResult {
         public BulkString { value = Arrays.copyOf(Objects.requireNonNull(value, "value"), value.length); }
         @Override public byte[] value() { return Arrays.copyOf(value, value.length); }
     }
 
-    /** Represents a RESP null value. */
+    /** Represents an absent application value. */
     record NullValue() implements CommandResult { }
+
+    /** Represents an ordered, nestable collection result. */
+    record Array(java.util.List<CommandResult> values) implements CommandResult {
+        /** Copies the response elements so a caller cannot alter an encoded result. */
+        public Array { values = java.util.List.copyOf(Objects.requireNonNull(values, "values")); }
+    }
 
     private static String requireLine(String value, String field) {
         String normalized = Objects.requireNonNull(value, field);

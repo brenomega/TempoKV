@@ -1,9 +1,9 @@
 # TempoKV
 
-TempoKV is a temporal key-value server. Stage 1 provides the executable bootstrap,
-configuration, exclusive data-directory lock, lifecycle health, and basic metrics.
-Stage 2 adds a RESP2 TCP endpoint with the administrative `PING` command;
-storage commands remain planned for later stages.
+TempoKV is an in-memory temporal key-value server. Stages E1–E4 provide
+configuration and lifecycle management, a non-blocking RESP2 endpoint, current
+key-value commands, MVCC history, binary diffs, append-only restoration, and
+configurable history retention.
 
 ## Requirements
 
@@ -14,11 +14,14 @@ storage commands remain planned for later stages.
 
 ```bash
 ./gradlew clean build
+./gradlew test
 ./gradlew integrationTest
 ```
 
-`check` runs unit tests and the UC-00 integration suite. The executable JAR is
-written to `build/libs/tempokv-0.1.0.jar`.
+`check` runs unit tests and every integration smoke test implemented through
+E4. The executable JAR is written to `build/libs/tempokv-0.1.0.jar`.
+Combined unit/integration coverage is written to
+`build/reports/jacoco/jacocoAllReport/html/index.html`.
 
 ## Run locally
 
@@ -26,21 +29,23 @@ written to `build/libs/tempokv-0.1.0.jar`.
 java -jar build/libs/tempokv-0.1.0.jar --data-dir=./data
 ```
 
-The process accepts RESP clients on `--resp-port` (default `6379`). It remains running until it
-receives a normal shutdown signal, then releases the data-directory lock.
+The process accepts RESP clients on `--resp-port` (default `6379`) until normal
+shutdown, when it closes network resources and releases the data-directory
+lock.
 
 ## Run with Docker
 
 ```bash
 docker compose up --build
+redis-cli -p 6379 PING
 ```
 
-The Compose volume persists `/data`. Stop the node with `Ctrl+C` or
-`docker compose down`; the lock is released during shutdown.
+Compose publishes RESP on `127.0.0.1:6379`/`6379` and persists `/data` in a
+named volume. Stop the node with `Ctrl+C` or `docker compose down`.
 
 ## Configuration
 
-Configuration precedence is: command-line option, environment variable,
+Configuration precedence is command-line option, environment variable,
 optional UTF-8 `.properties` file, then default.
 
 | Option | Environment variable | Default |
@@ -54,16 +59,31 @@ optional UTF-8 `.properties` file, then default.
 | `--authentication-enabled` | `TEMPOKV_AUTHENTICATION_ENABLED` | `false` |
 
 Use `--config=/path/to/tempokv.properties` or `TEMPOKV_CONFIG` to select the
-optional file. Its keys use the `tempokv.*` names documented in
+optional file. File keys use the `tempokv.*` names accepted by
 `ServerConfiguration`.
 
-## RESP in Stage 2
+## RESP commands through E4
 
-Use an official Redis client to verify the UC-02 flow:
+Current-state commands:
 
-```bash
-redis-cli -p 6379 PING
+```text
+PING
+SET key value
+GET key
+DEL key
+EXPIRE key seconds
+TTL key
 ```
 
-The response is `PONG`. The currently supported wire format and command scope
-are documented in [the RESP protocol note](docs/04_Protocolo_RESP_Suportado.md).
+Temporal commands:
+
+```text
+GETAT key VERSION version
+GETAT key TIMESTAMP 2026-01-01T00:00:00Z
+HISTORY key [offset [limit]]
+DIFF key first-version second-version
+RESTOREAT key version
+```
+
+The exact response shapes are documented in
+[the RESP protocol note](docs/04_Protocolo_RESP_Suportado.md).
