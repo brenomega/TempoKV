@@ -1,0 +1,13 @@
+services:
+  tempokv:
+    build:
+      context: .
+    image: tempokv:local
+    environment:
+      TEMPOKV_DATA_DIR: /data
+    volumes:
+      - tempokv-data:/data
+    stop_grace_period: 15s
+
+volumes:
+  tempokv-data:
