@@ -6,6 +6,7 @@ import io.tempokv.observability.MetricsSnapshot;
 import io.tempokv.observability.ServerHealth;
 import io.tempokv.observability.ServerHealthService;
 import io.tempokv.persistence.DatabaseLock;
+import io.tempokv.server.RespServer;
 
 import java.io.IOException;
 import java.util.Objects;
@@ -18,6 +19,7 @@ public final class TempoKvServer implements AutoCloseable {
     private final DatabaseLock databaseLock;
     private final MetricsRegistry metrics;
     private final ServerHealthService healthService;
+    private RespServer respServer;
     private boolean started;
 
     /** Creates a server from already-constructed infrastructure dependencies. */
@@ -32,7 +34,7 @@ public final class TempoKvServer implements AutoCloseable {
         this.healthService = Objects.requireNonNull(healthService, "healthService");
     }
 
-    /** Acquires the data-directory lock and publishes readiness for the E1 node. */
+    /** Acquires infrastructure resources, starts the RESP endpoint, and publishes readiness. */
     public synchronized void start() throws IOException {
         if (started) {
             return;
@@ -41,6 +43,8 @@ public final class TempoKvServer implements AutoCloseable {
         metrics.setGauge("server.ready", 0);
         try {
             databaseLock.acquire();
+            respServer = new RespServer(configuration.respPort(), metrics);
+            respServer.start();
             started = true;
             metrics.incrementCounter("server.starts");
             metrics.setGauge("server.lock_held", 1);
@@ -51,6 +55,10 @@ public final class TempoKvServer implements AutoCloseable {
             metrics.setGauge("server.ready", 0);
             healthService.markDegraded("Startup failed: " + exception.getClass().getSimpleName());
             try {
+                if (respServer != null) {
+                    respServer.close();
+                    respServer = null;
+                }
                 databaseLock.close();
             } catch (IOException closeFailure) {
                 exception.addSuppressed(closeFailure);
@@ -59,7 +67,7 @@ public final class TempoKvServer implements AutoCloseable {
         }
     }
 
-    /** Stops E1 infrastructure in reverse ownership order and releases the data lock. */
+    /** Stops network processing before releasing the data-directory lock. */
     public synchronized void stop() throws IOException {
         if (!started && !databaseLock.isHeld()) {
             return;
@@ -68,6 +76,10 @@ public final class TempoKvServer implements AutoCloseable {
         metrics.setGauge("server.ready", 0);
         IOException failure = null;
         try {
+            if (respServer != null) {
+                respServer.close();
+                respServer = null;
+            }
             databaseLock.close();
         } catch (IOException exception) {
             failure = exception;
@@ -98,7 +110,15 @@ public final class TempoKvServer implements AutoCloseable {
 
     /** Returns whether the E1 lifecycle currently owns its data-directory lock. */
     public synchronized boolean isRunning() {
-        return started && databaseLock.isHeld();
+        return started && databaseLock.isHeld() && respServer != null && respServer.isRunning();
+    }
+
+    /** Returns the bound RESP port after the server becomes ready. */
+    public synchronized int respPort() throws IOException {
+        if (respServer == null) {
+            throw new IOException("RESP server is not started");
+        }
+        return respServer.port();
     }
 
     /** Delegates resource cleanup to the ordered shutdown operation. */

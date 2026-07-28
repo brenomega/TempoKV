@@ -2,7 +2,8 @@
 
 TempoKV is a temporal key-value server. Stage 1 provides the executable bootstrap,
 configuration, exclusive data-directory lock, lifecycle health, and basic metrics.
-Network protocols and storage are introduced in later stages.
+Stage 2 adds a RESP2 TCP endpoint with the administrative `PING` command;
+storage commands remain planned for later stages.
 
 ## Requirements
 
@@ -25,7 +26,7 @@ written to `build/libs/tempokv-0.1.0.jar`.
 java -jar build/libs/tempokv-0.1.0.jar --data-dir=./data
 ```
 
-The Stage 1 process has no database endpoints yet. It remains running until it
+The process accepts RESP clients on `--resp-port` (default `6379`). It remains running until it
 receives a normal shutdown signal, then releases the data-directory lock.
 
 ## Run with Docker
@@ -55,3 +56,14 @@ optional UTF-8 `.properties` file, then default.
 Use `--config=/path/to/tempokv.properties` or `TEMPOKV_CONFIG` to select the
 optional file. Its keys use the `tempokv.*` names documented in
 `ServerConfiguration`.
+
+## RESP in Stage 2
+
+Use an official Redis client to verify the UC-02 flow:
+
+```bash
+redis-cli -p 6379 PING
+```
+
+The response is `PONG`. The currently supported wire format and command scope
+are documented in [the RESP protocol note](docs/04_Protocolo_RESP_Suportado.md).

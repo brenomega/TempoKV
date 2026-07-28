@@ -10,9 +10,12 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.net.ServerSocket;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -33,7 +36,7 @@ class Uc00StartupIntegrationTest {
     void startsAndShutsDownAgainstEmptyDirectory() throws Exception {
         Path dataDirectory = temporaryDirectory.resolve("data");
         TempoKvServer first = TempoKvApplication.bootstrap(
-                new String[]{"--data-dir=" + dataDirectory}, Map.of());
+                serverArguments(dataDirectory), Map.of());
         try {
             assertEquals(ServerHealth.READY, first.state());
             assertTrue(first.isRunning());
@@ -50,7 +53,7 @@ class Uc00StartupIntegrationTest {
         assertEquals(0L, first.metrics().gauges().get("server.lock_held"));
 
         TempoKvServer second = TempoKvApplication.bootstrap(
-                new String[]{"--data-dir=" + dataDirectory}, Map.of());
+                serverArguments(dataDirectory), Map.of());
         try {
             assertTrue(second.isRunning());
         } finally {
@@ -63,11 +66,7 @@ class Uc00StartupIntegrationTest {
     @Test
     void startsExecutableJarAndReleasesLockOnShutdownSignal() throws Exception {
         Path dataDirectory = temporaryDirectory.resolve("jar-data");
-        Process process = new ProcessBuilder(
-                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                "-jar",
-                executableJar().toString(),
-                "--data-dir=" + dataDirectory)
+        Process process = new ProcessBuilder(jarCommand(dataDirectory))
                 .redirectErrorStream(true)
                 .start();
         try {
@@ -79,7 +78,7 @@ class Uc00StartupIntegrationTest {
         }
 
         TempoKvServer restarted = TempoKvApplication.bootstrap(
-                new String[]{"--data-dir=" + dataDirectory}, Map.of());
+                serverArguments(dataDirectory), Map.of());
         try {
             assertTrue(restarted.isRunning());
         } finally {
@@ -92,7 +91,7 @@ class Uc00StartupIntegrationTest {
     void rejectsSecondInstanceForSameDirectory() throws Exception {
         Path dataDirectory = temporaryDirectory.resolve("data");
         TempoKvServer first = TempoKvApplication.bootstrap(
-                new String[]{"--data-dir=" + dataDirectory}, Map.of());
+                serverArguments(dataDirectory), Map.of());
         try {
             assertThrows(IOException.class,
                     () -> TempoKvApplication.bootstrap(new String[]{"--data-dir=" + dataDirectory}, Map.of()));
@@ -123,6 +122,25 @@ class Uc00StartupIntegrationTest {
             throw new IllegalStateException("Executable JAR was not built: " + jar);
         }
         return jar;
+    }
+
+    private static String[] serverArguments(Path dataDirectory) throws IOException {
+        try (ServerSocket resp = new ServerSocket(0); ServerSocket sql = new ServerSocket(0)) {
+            return new String[]{
+                    "--data-dir=" + dataDirectory,
+                    "--resp-port=" + resp.getLocalPort(),
+                    "--sql-port=" + sql.getLocalPort()
+            };
+        }
+    }
+
+    private static List<String> jarCommand(Path dataDirectory) throws IOException {
+        List<String> command = new ArrayList<>(List.of(
+                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                "-jar",
+                executableJar().toString()));
+        command.addAll(List.of(serverArguments(dataDirectory)));
+        return command;
     }
 
     private static void awaitLockFile(Path lockFile) throws InterruptedException {

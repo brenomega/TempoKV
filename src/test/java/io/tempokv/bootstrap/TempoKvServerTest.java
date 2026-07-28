@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.net.ServerSocket;
 import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -27,8 +28,9 @@ class TempoKvServerTest {
     @Test
     void managesEssentialLifecycle() throws Exception {
         DatabaseLock lock = new DatabaseLock(new FileSystemAdapter(), temporaryDirectory.resolve("data"));
+        Ports ports = availablePorts();
         TempoKvServer server = new TempoKvServer(
-                new ServerConfiguration(6379, 6380, temporaryDirectory.resolve("data"),
+                new ServerConfiguration(ports.resp(), ports.sql(), temporaryDirectory.resolve("data"),
                         ServerConfiguration.NodeRole.PRIMARY, Duration.ofDays(30), false, false),
                 lock,
                 new MetricsRegistry(),
@@ -48,4 +50,12 @@ class TempoKvServerTest {
         assertFalse(lock.isHeld());
         assertEquals(ServerHealth.STOPPING, server.state());
     }
+
+    private static Ports availablePorts() throws Exception {
+        try (ServerSocket resp = new ServerSocket(0); ServerSocket sql = new ServerSocket(0)) {
+            return new Ports(resp.getLocalPort(), sql.getLocalPort());
+        }
+    }
+
+    private record Ports(int resp, int sql) { }
 }
