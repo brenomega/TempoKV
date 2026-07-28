@@ -3,9 +3,15 @@ package io.tempokv.server;
 import io.tempokv.application.AdminCommandHandler;
 import io.tempokv.application.CommandDispatcher;
 import io.tempokv.application.CommandValidator;
+import io.tempokv.application.KeyValueCommandHandler;
 import io.tempokv.observability.MetricsRegistry;
 import io.tempokv.security.AccessController;
 import io.tempokv.security.Authenticator;
+import io.tempokv.storage.MvccStore;
+import io.tempokv.storage.StorageEngine;
+import io.tempokv.transaction.CommitCoordinator;
+import io.tempokv.transaction.VersionGenerator;
+import java.time.Clock;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.channels.ServerSocketChannel;
@@ -17,12 +23,19 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class RespServer implements AutoCloseable {
     private final int port;
     private final MetricsRegistry metrics;
+    private final StorageEngine storage;
+    private final Clock clock;
     private final AtomicLong activeConnections = new AtomicLong();
     private ServerSocketChannel socket;
     private NioEventLoop eventLoop;
 
-    /** Creates the RESP endpoint for the configured TCP port. */
-    public RespServer(int port, MetricsRegistry metrics) { this.port = port; this.metrics = Objects.requireNonNull(metrics, "metrics"); }
+    /** Creates the RESP endpoint with an in-memory MVCC store. */
+    public RespServer(int port, MetricsRegistry metrics) { this(port, metrics, new MvccStore(), Clock.systemUTC()); }
+
+    /** Creates the RESP endpoint over the supplied protocol-independent storage port. */
+    public RespServer(int port, MetricsRegistry metrics, StorageEngine storage, Clock clock) {
+        this.port = port; this.metrics = Objects.requireNonNull(metrics, "metrics"); this.storage = Objects.requireNonNull(storage, "storage"); this.clock = Objects.requireNonNull(clock, "clock");
+    }
 
     /** Binds the socket and starts serving RESP clients. */
     public synchronized void start() throws IOException {
@@ -30,7 +43,9 @@ public final class RespServer implements AutoCloseable {
         socket = ServerSocketChannel.open();
         try {
             socket.bind(new InetSocketAddress("127.0.0.1", port));
-            CommandDispatcher dispatcher = new CommandDispatcher(new CommandValidator(), List.of(new AdminCommandHandler(metrics)));
+            CommandDispatcher dispatcher = new CommandDispatcher(new CommandValidator(), List.of(
+                    new AdminCommandHandler(metrics),
+                    new KeyValueCommandHandler(storage, new CommitCoordinator(new VersionGenerator(), storage, clock), clock, metrics)));
             eventLoop = new NioEventLoop();
             eventLoop.start(socket, channel -> {
                 metrics.incrementCounter("resp.connections");

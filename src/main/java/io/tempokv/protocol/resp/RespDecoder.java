@@ -92,8 +92,10 @@ public final class RespDecoder {
     }
 
     private static Line line(byte[] input, int start) throws ProtocolException {
-        for (int i = start; i + 1 < input.length; i++) {
-            if (input[i] == '\r' && input[i + 1] == '\n') return new Line(new String(input, start, i - start, StandardCharsets.US_ASCII), i + 2);
+        for (int i = start; i < input.length; i++) {
+            if (i + 1 < input.length && input[i] == '\r' && input[i + 1] == '\n') {
+                return new Line(new String(input, start, i - start, StandardCharsets.US_ASCII), i + 2);
+            }
             if (input[i] == '\n') throw new ProtocolException("ERR RESP line must end with CRLF");
         }
         return null;
