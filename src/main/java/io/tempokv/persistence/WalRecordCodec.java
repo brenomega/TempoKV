@@ -18,10 +18,15 @@ import java.util.zip.CRC32;
 public final class WalRecordCodec {
     private static final int MAGIC = 0x544B5631;
     private static final short FORMAT_VERSION = 1;
-    private static final int MAX_RECORD_BYTES = 64 * 1024 * 1024;
+    static final int MAX_RECORD_BYTES = 64 * 1024 * 1024;
+    static final long MAX_ENCODED_RECORD_BYTES =
+            MAX_RECORD_BYTES + 4L + 2L + 4L + 4L;
 
     /** Serializes one record with a checksum that detects corruption before replay. */
     public byte[] encode(CommitRecord record) throws IOException {
+        if (encodedBodySize(record) > MAX_RECORD_BYTES) {
+            throw new IOException("WAL record exceeds 64 MiB");
+        }
         ByteArrayOutputStream payloadBytes = new ByteArrayOutputStream();
         try (DataOutputStream payload = new DataOutputStream(payloadBytes)) {
             payload.writeLong(record.version());
@@ -73,6 +78,22 @@ public final class WalRecordCodec {
         if (mutation.expiresAt() != null) output.writeLong(mutation.expiresAt().toEpochMilli());
         output.writeBoolean(mutation.restoredFromVersion() != null);
         if (mutation.restoredFromVersion() != null) output.writeLong(mutation.restoredFromVersion());
+    }
+
+    private static long encodedBodySize(CommitRecord record) {
+        long size = Long.BYTES + Long.BYTES + Integer.BYTES;
+        for (Mutation mutation : record.mutations()) {
+            size += Integer.BYTES
+                    + mutation.key().getBytes(StandardCharsets.UTF_8).length
+                    + Byte.BYTES
+                    + Integer.BYTES
+                    + mutation.valueSize()
+                    + Byte.BYTES
+                    + (mutation.expiresAt() == null ? 0 : Long.BYTES)
+                    + Byte.BYTES
+                    + (mutation.restoredFromVersion() == null ? 0 : Long.BYTES);
+        }
+        return size;
     }
     private static CommitRecord readBody(byte[] body) throws IOException {
         try (DataInputStream input = new DataInputStream(new ByteArrayInputStream(body))) {

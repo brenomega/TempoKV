@@ -10,6 +10,7 @@ import io.tempokv.transaction.CommitRecord;
 import io.tempokv.transaction.Mutation;
 import io.tempokv.transaction.VersionGenerator;
 import java.io.IOException;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -23,6 +24,18 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** Verifies the ordering and synchronization decisions that protect replica durability. */
 class ReplicationComponentsTest {
+    /** Leaves a caught-up replica connected while an idle primary emits no heartbeat frames. */
+    @Test
+    void disablesInitialSyncTimeoutAfterCatchUp() throws Exception {
+        try (Socket socket = new Socket()) {
+            socket.setSoTimeout(30_000);
+
+            ReplicaClient.disableCatchUpTimeout(socket);
+
+            assertEquals(0, socket.getSoTimeout());
+        }
+    }
+
     @TempDir Path directory;
 
     /** Installs a full snapshot, applies its next primary commit, and rejects replay regression. */
@@ -59,6 +72,31 @@ class ReplicationComponentsTest {
                     bytes("second"),
                     replica.get("profile", Instant.MAX).orElseThrow().value());
             assertThrows(IOException.class, () -> applier.apply(second));
+        }
+    }
+
+    /** Rejects a primary stream gap before WAL append or partial replica publication. */
+    @Test
+    void replicaRejectsCommitVersionGap() throws Exception {
+        MvccStore replica = new MvccStore();
+        VersionGenerator versions = new VersionGenerator();
+        ReplicaState state = new ReplicaState(ServerConfiguration.NodeRole.REPLICA);
+        state.initialize(0);
+        FileSystemAdapter files = new FileSystemAdapter();
+        try (FileWriteAheadLog wal =
+                new FileWriteAheadLog(directory, files, FsyncPolicy.ALWAYS)) {
+            ReplicaApplier applier = new ReplicaApplier(
+                    replica,
+                    versions,
+                    wal,
+                    new SnapshotStore(directory, files),
+                    state);
+
+            assertThrows(IOException.class, () -> applier.apply(
+                    record(2, "profile", "skipped-first")));
+
+            assertEquals(0, state.appliedVersion());
+            assertEquals(List.of(), wal.replay());
         }
     }
 

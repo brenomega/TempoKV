@@ -7,11 +7,27 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Verifies the RESP framing boundary used by every client connection. */
 class RespProtocolTest {
+    /** Rejects huge aggregate requests before allocating attacker-sized frame lists. */
+    @Test
+    void rejectsOversizedArrayElementCount() {
+        RespDecoder decoder = new RespDecoder();
+
+        RespDecoder.ProtocolException failure = assertThrows(
+                RespDecoder.ProtocolException.class,
+                () -> decoder.feed("*1025\r\n"
+                        .getBytes(StandardCharsets.US_ASCII)));
+
+        assertEquals(
+                "ERR RESP array exceeds 1024 elements",
+                failure.getMessage());
+    }
+
     /** Retains an incomplete frame, then decodes it and a concatenated following frame in order. */
     @Test
     void reconstructsFragmentedAndConcatenatedFrames() throws Exception {
@@ -38,6 +54,18 @@ class RespProtocolTest {
     void rejectsMalformedRespLineEnding() {
         assertThrows(RespDecoder.ProtocolException.class,
                 () -> new RespDecoder().feed("+PING\n".getBytes(StandardCharsets.US_ASCII)));
+    }
+
+    /** Releases attacker-controlled buffered bytes after a terminal frame error. */
+    @Test
+    void clearsPendingBytesAfterProtocolError() {
+        RespDecoder decoder = new RespDecoder();
+
+        assertThrows(
+                RespDecoder.ProtocolException.class,
+                () -> decoder.feed("+PING\n".getBytes(StandardCharsets.US_ASCII)));
+
+        assertFalse(decoder.hasPendingBytes());
     }
 
     /** Encodes nested collection results used by HISTORY and DIFF canonically. */

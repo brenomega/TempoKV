@@ -80,6 +80,9 @@ public record Mutation(
     /** Returns a defensive copy of the binary value, when present. */
     @Override public byte[] value() { return value == null ? null : Arrays.copyOf(value, value.length); }
 
+    /** Returns the immutable payload size without allocating another defensive copy. */
+    public int valueSize() { return value == null ? 0 : value.length; }
+
     private static String requireKey(String key) {
         String normalized = Objects.requireNonNull(key, "key");
         if (normalized.isEmpty()) throw new IllegalArgumentException("Key must not be empty");

@@ -54,6 +54,33 @@ class MvccStoreTest {
         assertEquals(2, store.history("key").size());
     }
 
+    /** Keeps only the current expiry per key so repeated TTL changes cannot grow the index forever. */
+    @Test
+    void replacesObsoleteTtlIndexEntries() {
+        MvccStore store = new MvccStore();
+        store.apply(new CommitRecord(
+                1, NOW, List.of(Mutation.put("key", bytes("value")))));
+        store.apply(new CommitRecord(
+                2,
+                NOW.plusSeconds(1),
+                List.of(Mutation.expire("key", NOW.plusSeconds(100)))));
+        store.apply(new CommitRecord(
+                3,
+                NOW.plusSeconds(2),
+                List.of(Mutation.expire("key", NOW.plusSeconds(200)))));
+
+        assertEquals(List.of(3L), store.ttlIndex().entries().stream()
+                .map(TtlIndex.Entry::version)
+                .toList());
+
+        store.apply(new CommitRecord(
+                4,
+                NOW.plusSeconds(3),
+                List.of(Mutation.put("key", bytes("replacement")))));
+
+        assertTrue(store.ttlIndex().entries().isEmpty());
+    }
+
     /** Selects the newest commit when timestamps are equal and respects historical TTL boundaries. */
     @Test
     void resolvesEqualTimestampsAndHistoricalExpiration() {

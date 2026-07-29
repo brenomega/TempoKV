@@ -30,6 +30,7 @@ public final class SqlConnectionHandler
     private final ByteArrayOutputStream pending = new ByteArrayOutputStream();
     private boolean insideString;
     private boolean pendingStringQuote;
+    private boolean discardingOversizedStatement;
 
     /** Creates a handler and authenticates its isolated SQL session. */
     public SqlConnectionHandler(
@@ -59,6 +60,10 @@ public final class SqlConnectionHandler
     }
 
     private void process(byte current, Consumer<byte[]> responses) {
+        if (discardingOversizedStatement) {
+            discard(current);
+            return;
+        }
         if (pendingStringQuote) {
             pendingStringQuote = false;
             if (current == '\'') {
@@ -98,7 +103,8 @@ public final class SqlConnectionHandler
                 1,
                 1)));
         metrics.incrementCounter("sql.errors.lexical");
-        reset();
+        pending.reset();
+        discardingOversizedStatement = true;
     }
 
     private void executePending(Consumer<byte[]> responses) {
@@ -151,6 +157,28 @@ public final class SqlConnectionHandler
         pending.reset();
         insideString = false;
         pendingStringQuote = false;
+        discardingOversizedStatement = false;
+    }
+
+    private void discard(byte current) {
+        if (pendingStringQuote) {
+            pendingStringQuote = false;
+            if (current == '\'') {
+                return;
+            }
+            insideString = false;
+        }
+        if (current == '\'') {
+            if (insideString) {
+                pendingStringQuote = true;
+            } else {
+                insideString = true;
+            }
+            return;
+        }
+        if (current == ';' && !insideString) {
+            reset();
+        }
     }
 
     /** Aborts and releases an active transaction if the SQL connection is lost. */

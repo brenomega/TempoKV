@@ -16,6 +16,7 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -37,6 +38,52 @@ class CommitCoordinatorDurabilityTest {
                 CommitFailedException.class,
                 () -> commits.commit(List.of(Mutation.put("key", bytes("value")))));
         assertTrue(store.get("key", Instant.EPOCH).isEmpty());
+    }
+
+    /** A persistence failure permanently fences later writes in the same process. */
+    @Test
+    void rejectsEveryCommitAfterDurableAppendFailure() {
+        MvccStore store = new MvccStore();
+        int[] attempts = {0};
+        CommitCoordinator commits = new CommitCoordinator(
+                new VersionGenerator(),
+                store,
+                CLOCK,
+                ignored -> {
+                    attempts[0]++;
+                    throw new IOException("disk failure");
+                });
+
+        assertThrows(
+                CommitFailedException.class,
+                () -> commits.commit(List.of(Mutation.put("first", bytes("value")))));
+        assertThrows(
+                CommitFailedException.class,
+                () -> commits.commit(List.of(Mutation.put("second", bytes("value")))));
+
+        assertEquals(1, attempts[0]);
+        assertTrue(store.get("second", Instant.EPOCH).isEmpty());
+    }
+
+    /** A best-effort replication listener cannot turn a durable local commit into a client error. */
+    @Test
+    void publisherFailureDoesNotChangeCommittedOutcome() {
+        MvccStore store = new MvccStore();
+        CommitCoordinator commits = new CommitCoordinator(
+                new VersionGenerator(),
+                store,
+                CLOCK);
+        commits.setCommitPublisher(ignored -> {
+            throw new IllegalStateException("replica disconnected");
+        });
+
+        CommitRecord record =
+                commits.commit(List.of(Mutation.put("key", bytes("value"))));
+
+        assertEquals(1, record.version());
+        assertArrayEquals(
+                bytes("value"),
+                store.get("key", Instant.EPOCH).orElseThrow().value());
     }
 
     /** A crash after append but before publication is recovered from the durable record. */

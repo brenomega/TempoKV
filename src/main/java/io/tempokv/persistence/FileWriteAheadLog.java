@@ -25,6 +25,7 @@ public final class FileWriteAheadLog implements WriteAheadLog {
     private long activeSize;
     private long nextSegmentId;
     private long lastVersion;
+    private IOException appendFailure;
 
     /** Opens the WAL with the production 16 MiB segment limit. */
     public FileWriteAheadLog(
@@ -55,6 +56,9 @@ public final class FileWriteAheadLog implements WriteAheadLog {
     @Override
     public synchronized void append(CommitRecord record) throws IOException {
         Objects.requireNonNull(record, "record");
+        if (appendFailure != null) {
+            throw new IOException("WAL is unavailable after an append failure", appendFailure);
+        }
         if (record.version() <= lastVersion) {
             throw new IOException("WAL commit versions must be strictly increasing");
         }
@@ -63,13 +67,18 @@ public final class FileWriteAheadLog implements WriteAheadLog {
             activeSegment = segment(nextSegmentId++);
             activeSize = 0;
         }
-        try (FileChannel channel = fileSystem.open(
-                activeSegment,
-                StandardOpenOption.CREATE,
-                StandardOpenOption.WRITE,
-                StandardOpenOption.APPEND)) {
-            writeFully(channel, ByteBuffer.wrap(encoded));
-            if (fsyncPolicy == FsyncPolicy.ALWAYS) fileSystem.force(channel);
+        try {
+            try (FileChannel channel = fileSystem.open(
+                    activeSegment,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.WRITE,
+                    StandardOpenOption.APPEND)) {
+                writeFully(channel, ByteBuffer.wrap(encoded));
+                if (fsyncPolicy == FsyncPolicy.ALWAYS) fileSystem.force(channel);
+            }
+        } catch (IOException failure) {
+            appendFailure = failure;
+            throw failure;
         }
         activeSize += encoded.length;
         lastVersion = record.version();
@@ -138,9 +147,14 @@ public final class FileWriteAheadLog implements WriteAheadLog {
         nextSegmentId = 0;
         activeSegment = null;
         activeSize = 0;
-        for (Path segment : segments) {
+        for (int index = 0; index < segments.size(); index++) {
+            Path segment = segments.get(index);
             SegmentScan scan = scan(segment, ignored -> { }, lastVersion);
             if (scan.completeBytes() < fileSystem.size(segment)) {
+                if (index != segments.size() - 1) {
+                    throw new IOException(
+                            "Incomplete WAL record before the final segment");
+                }
                 try (FileChannel channel = fileSystem.open(segment, StandardOpenOption.WRITE)) {
                     channel.truncate(scan.completeBytes());
                     fileSystem.force(channel);
@@ -157,6 +171,11 @@ public final class FileWriteAheadLog implements WriteAheadLog {
             Path segment,
             Consumer<CommitRecord> consumer,
             long previousVersion) throws IOException {
+        long segmentBytes = fileSystem.size(segment);
+        long maximumBytes = Math.max(maxSegmentBytes, WalRecordCodec.MAX_ENCODED_RECORD_BYTES);
+        if (segmentBytes > maximumBytes) {
+            throw new IOException("WAL segment exceeds configured maximum size");
+        }
         byte[] bytes = fileSystem.readAllBytes(segment);
         int offset = 0;
         long last = previousVersion;
@@ -199,7 +218,16 @@ public final class FileWriteAheadLog implements WriteAheadLog {
     }
 
     private static void writeFully(FileChannel channel, ByteBuffer buffer) throws IOException {
-        while (buffer.hasRemaining()) channel.write(buffer);
+        int zeroProgressWrites = 0;
+        while (buffer.hasRemaining()) {
+            if (channel.write(buffer) == 0) {
+                if (++zeroProgressWrites == 16) {
+                    throw new IOException("File write made no progress");
+                }
+            } else {
+                zeroProgressWrites = 0;
+            }
+        }
     }
 
     private record SegmentScan(long completeBytes, long lastVersion) { }

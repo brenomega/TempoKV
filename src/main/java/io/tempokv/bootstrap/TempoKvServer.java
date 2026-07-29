@@ -137,6 +137,10 @@ public final class TempoKvServer implements AutoCloseable {
                 clock,
                 record -> {
                     if (writeAheadLog != null) writeAheadLog.append(record);
+                },
+                failure -> {
+                    metrics.incrementCounter("commit.failures");
+                    healthService.markDegraded("Commit pipeline failed");
                 });
         this.replicationManager = new ReplicationManager(
                 configuration,

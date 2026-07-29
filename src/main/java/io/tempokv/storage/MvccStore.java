@@ -15,6 +15,7 @@ import java.util.Optional;
 public final class MvccStore implements StorageEngine {
     private final KeyIndex index = new KeyIndex();
     private final TtlIndex ttlIndex = new TtlIndex();
+    private volatile long currentVersion;
 
     /** Resolves only the current visible head; expired values remain in historical chains. */
     @Override public Optional<VersionedValue> get(String key, Instant now) {
@@ -34,27 +35,45 @@ public final class MvccStore implements StorageEngine {
     /** Builds all affected chains first and publishes the complete commit with one atomic swap. */
     @Override public synchronized void apply(CommitRecord record) {
         Objects.requireNonNull(record, "record");
-        KeyIndex.Snapshot snapshot = index.snapshot();
-        Map<String, VersionChain> updated = new HashMap<>(snapshot.chains());
-        Map<String, KeyIndex.HistoryBoundary> boundaries = new HashMap<>(snapshot.boundaries());
-        List<TtlIndex.Entry> expirations = new ArrayList<>();
-        for (Mutation mutation : record.mutations()) {
-            applyMutation(updated, record, mutation, expirations);
-            boundaries.putIfAbsent(mutation.key(),
-                    new KeyIndex.HistoryBoundary(record.version(), record.committedAt(), false));
+        if (record.version() <= currentVersion) {
+            throw new IllegalArgumentException(
+                    "Commit version must advance global storage version");
         }
-        index.replaceAll(updated, boundaries);
+        List<TtlIndex.Entry> expirations = new ArrayList<>();
+        index.update((chains, boundaries) -> {
+            Map<String, VersionChain> updated = new HashMap<>();
+            Map<String, KeyIndex.HistoryBoundary> newBoundaries =
+                    new HashMap<>();
+            for (Mutation mutation : record.mutations()) {
+                applyMutation(
+                        chains,
+                        updated,
+                        record,
+                        mutation,
+                        expirations);
+                if (!boundaries.containsKey(mutation.key())) {
+                    newBoundaries.putIfAbsent(
+                            mutation.key(),
+                            new KeyIndex.HistoryBoundary(
+                                    record.version(),
+                                    record.committedAt(),
+                                    false));
+                }
+            }
+            chains.putAll(updated);
+            boundaries.putAll(newBoundaries);
+        });
+        record.mutations().forEach(mutation -> ttlIndex.remove(mutation.key()));
         expirations.forEach(entry -> ttlIndex.add(entry.key(), entry.version(), entry.expiresAt()));
+        currentVersion = record.version();
     }
 
     /** Exposes scheduled expirations to the E5 active-expiration worker. */
     public TtlIndex ttlIndex() { return ttlIndex; }
 
     /** Captures an atomic retained-state view suitable for durable persistence. */
-    @Override public StorageSnapshot snapshot() {
+    @Override public synchronized StorageSnapshot snapshot() {
         KeyIndex.Snapshot snapshot = index.snapshot();
-        long version = snapshot.chains().values().stream().map(VersionChain::versions)
-                .flatMap(List::stream).mapToLong(VersionedValue::version).max().orElse(0);
         Map<String, StorageSnapshot.HistoryBoundary> boundaries = new HashMap<>();
         snapshot.boundaries().forEach((key, boundary) -> boundaries.put(
                 key,
@@ -62,7 +81,11 @@ public final class MvccStore implements StorageEngine {
                         boundary.firstVersion(),
                         boundary.firstCommittedAt(),
                         boundary.truncated())));
-        return new StorageSnapshot(version, snapshot.chains(), boundaries, ttlIndex.entries());
+        return new StorageSnapshot(
+                currentVersion,
+                snapshot.chains(),
+                boundaries,
+                ttlIndex.entries());
     }
 
     /** Restores chains and rebuilds the derived TTL index from their retained heads. */
@@ -79,16 +102,15 @@ public final class MvccStore implements StorageEngine {
         ttlIndex.clear();
         snapshot.expirations().forEach(
                 entry -> ttlIndex.add(entry.key(), entry.version(), entry.expiresAt()));
+        currentVersion = snapshot.version();
     }
 
     /** Returns the highest version in the atomically published state. */
-    @Override public long currentVersion() { return snapshot().version(); }
+    @Override public long currentVersion() { return currentVersion; }
 
     /** Checks whether a scheduled expiration still refers to the current version. */
     public boolean isCurrentVersion(String key, long version, Instant now) {
-        return index.get(requireKey(key)).map(VersionChain::versions)
-                .filter(values -> !values.isEmpty())
-                .map(values -> values.getFirst())
+        return index.get(requireKey(key)).flatMap(VersionChain::latest)
                 .map(value -> !value.tombstone() && value.version() == version
                         && value.expiresAt() != null && !value.expiresAt().isAfter(now))
                 .orElse(false);
@@ -105,13 +127,13 @@ public final class MvccStore implements StorageEngine {
             throw new IllegalArgumentException("Specify exactly one historical selector");
         }
         String normalizedKey = requireKey(key);
-        KeyIndex.Snapshot snapshot = index.snapshot();
-        VersionChain chain = snapshot.chains().get(normalizedKey);
+        KeyIndex.KeyState state = index.state(normalizedKey);
+        VersionChain chain = state.chain();
         if (chain == null) return StorageEngine.HistoricalValue.missingKey();
         Optional<VersionedValue> selected =
                 version == null ? chain.atTimestamp(timestamp) : chain.atVersion(version);
         if (selected.isPresent()) return StorageEngine.HistoricalValue.found(selected.orElseThrow());
-        KeyIndex.HistoryBoundary boundary = snapshot.boundaries().get(normalizedKey);
+        KeyIndex.HistoryBoundary boundary = state.boundary();
         boolean beforeCreation = version != null
                 ? version < boundary.firstVersion()
                 : timestamp.isBefore(boundary.firstCommittedAt());
@@ -132,8 +154,8 @@ public final class MvccStore implements StorageEngine {
     /** Atomically replaces chains with maintenance-approved retained prefixes. */
     synchronized int retainHistory(RetentionPolicy policy, Instant now, long oldestSnapshotVersion) {
         KeyIndex.Snapshot snapshot = index.snapshot();
-        Map<String, VersionChain> updated = new HashMap<>(snapshot.chains());
-        Map<String, KeyIndex.HistoryBoundary> boundaries = new HashMap<>(snapshot.boundaries());
+        Map<String, VersionChain> updated = new HashMap<>();
+        Map<String, KeyIndex.HistoryBoundary> boundaries = new HashMap<>();
         int removed = 0;
         for (Map.Entry<String, VersionChain> entry : snapshot.chains().entrySet()) {
             List<VersionedValue> versions = entry.getValue().versions();
@@ -143,18 +165,25 @@ public final class MvccStore implements StorageEngine {
             if (removedFromKey == 0) continue;
             removed += removedFromKey;
             updated.put(entry.getKey(), VersionChain.fromNewestFirst(retained));
-            boundaries.computeIfPresent(entry.getKey(), (ignored, boundary) -> boundary.truncatedCopy());
+            KeyIndex.HistoryBoundary boundary =
+                    snapshot.boundaries().get(entry.getKey());
+            if (boundary != null) {
+                boundaries.put(entry.getKey(), boundary.truncatedCopy());
+            }
         }
-        if (removed > 0) index.replaceAll(updated, boundaries);
+        if (removed > 0) index.replaceEntries(updated, boundaries);
         return removed;
     }
 
     private static void applyMutation(
+            Map<String, VersionChain> existingChains,
             Map<String, VersionChain> updated,
             CommitRecord record,
             Mutation mutation,
             List<TtlIndex.Entry> expirations) {
-        VersionChain existing = updated.getOrDefault(mutation.key(), new VersionChain());
+        VersionChain existing = updated.getOrDefault(
+                mutation.key(),
+                existingChains.getOrDefault(mutation.key(), new VersionChain()));
         VersionedValue next = switch (mutation.type()) {
             case PUT -> new VersionedValue(
                     record.version(), mutation.value(), false, record.committedAt(), null, null);

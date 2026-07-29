@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit;
  */
 public final class ReplicaClient implements AutoCloseable {
     private static final Duration RECONNECT_DELAY = Duration.ofMillis(200);
+    private static final int SOCKET_TIMEOUT_MILLIS = 30_000;
     private final String host;
     private final int port;
     private final String token;
@@ -108,6 +109,7 @@ public final class ReplicaClient implements AutoCloseable {
             activeSocket = socket;
             socket.connect(new InetSocketAddress(host, port), 2_000);
             socket.setTcpNoDelay(true);
+            socket.setSoTimeout(SOCKET_TIMEOUT_MILLIS);
             state.markSynchronizing();
             metrics.setGauge("replication.connected", 1);
             try (DataInputStream input = new DataInputStream(socket.getInputStream());
@@ -117,11 +119,20 @@ public final class ReplicaClient implements AutoCloseable {
                     int message = input.read();
                     if (message < 0) throw new EOFException("Primary closed replication stream");
                     process(message, input, output);
+                    if (message == PrimaryReplicationEndpoint.CAUGHT_UP) {
+                        // An idle, healthy primary sends no heartbeat. Keep the timeout only
+                        // around handshake/catch-up so inactivity does not cause reconnect churn.
+                        disableCatchUpTimeout(socket);
+                    }
                 }
             }
         } finally {
             activeSocket = null;
         }
+    }
+
+    static void disableCatchUpTimeout(Socket socket) throws IOException {
+        Objects.requireNonNull(socket, "socket").setSoTimeout(0);
     }
 
     private void process(

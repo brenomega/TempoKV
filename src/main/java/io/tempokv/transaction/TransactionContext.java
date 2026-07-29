@@ -14,11 +14,15 @@ import java.util.Set;
  * Holds one session's stable snapshot, ordered write set, and lifecycle state.
  */
 public final class TransactionContext {
+    private static final int MAX_MUTATIONS = 4_096;
+    private static final long MAX_STAGED_BYTES = 32L * 1024 * 1024;
     /** Identifies whether a context may still accept reads and staged mutations. */
     public enum State { ACTIVE, COMMITTED, ROLLED_BACK, ABORTED }
 
     private final long snapshotVersion;
     private final List<Mutation> writeSet = new ArrayList<>();
+    private final LinkedHashSet<String> stagedKeys = new LinkedHashSet<>();
+    private long stagedBytes;
     private State state = State.ACTIVE;
 
     /** Creates an active context at a non-negative committed version. */
@@ -36,7 +40,25 @@ public final class TransactionContext {
     /** Appends one mutation in program order without making it globally visible. */
     public synchronized void stage(Mutation mutation) {
         requireActive();
-        writeSet.add(Objects.requireNonNull(mutation, "mutation"));
+        Mutation staged = Objects.requireNonNull(mutation, "mutation");
+        if (writeSet.size() == MAX_MUTATIONS) {
+            throw new IllegalArgumentException(
+                    "ERR transaction write set exceeds 4096 mutations");
+        }
+        if (stagedKeys.contains(staged.key())) {
+            throw new IllegalArgumentException(
+                    "ERR transaction contains multiple mutations for key");
+        }
+        long mutationBytes = staged.key().getBytes(
+                java.nio.charset.StandardCharsets.UTF_8).length
+                + (long) staged.valueSize();
+        if (mutationBytes > MAX_STAGED_BYTES - stagedBytes) {
+            throw new IllegalArgumentException(
+                    "ERR transaction write set exceeds 32 MiB");
+        }
+        writeSet.add(staged);
+        stagedKeys.add(staged.key());
+        stagedBytes += mutationBytes;
     }
 
     /** Returns an immutable copy of all mutations in commit order. */
@@ -82,18 +104,25 @@ public final class TransactionContext {
     /** Marks a successfully published context as committed. */
     public synchronized void markCommitted() {
         transition(State.COMMITTED);
+        clearWriteSet();
     }
 
     /** Marks a client-discarded context as rolled back and clears staged bytes. */
     public synchronized void markRolledBack() {
         transition(State.ROLLED_BACK);
-        writeSet.clear();
+        clearWriteSet();
     }
 
     /** Marks a conflicting or failed context as aborted and clears staged bytes. */
     public synchronized void markAborted() {
         transition(State.ABORTED);
+        clearWriteSet();
+    }
+
+    private void clearWriteSet() {
         writeSet.clear();
+        stagedKeys.clear();
+        stagedBytes = 0;
     }
 
     private void transition(State target) {

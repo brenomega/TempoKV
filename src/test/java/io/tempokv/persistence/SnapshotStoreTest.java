@@ -67,6 +67,23 @@ class SnapshotStoreTest {
         assertEquals(0, snapshots.safeCompactionVersion());
     }
 
+    /** Refuses startup when snapshot files exist but none can be validated. */
+    @Test
+    void rejectsDataDirectoryWhenEverySnapshotIsCorrupt() throws Exception {
+        FileSystemAdapter files = new FileSystemAdapter();
+        SnapshotStore snapshots = new SnapshotStore(directory, files);
+        MvccStore store = new MvccStore();
+        store.apply(record(1, Mutation.put("key", bytes("value"))));
+        snapshots.save(store.snapshot());
+        Path only = files.listRegularFiles(
+                directory.resolve("snapshots"), ".snapshot").getFirst();
+        byte[] encoded = files.readAllBytes(only);
+        encoded[encoded.length - 1] ^= 1;
+        java.nio.file.Files.write(only, encoded);
+
+        assertThrows(IOException.class, snapshots::load);
+    }
+
     /** A failure before rename leaves no published snapshot. */
     @Test
     void failureBeforeRenameDoesNotPublishPartialSnapshot() throws Exception {

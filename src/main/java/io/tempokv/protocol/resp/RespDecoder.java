@@ -9,26 +9,31 @@ import java.util.List;
 /** Decodes complete RESP2 frames while retaining incomplete bytes for a later read. */
 public final class RespDecoder {
     private static final int MAX_FRAME_BYTES = 16 * 1024 * 1024;
-    private static final int MAX_ARRAY_ELEMENTS = 1_000_000;
+    private static final int MAX_ARRAY_ELEMENTS = 1_024;
     private static final int MAX_NESTING_DEPTH = 128;
     private final ByteArrayOutputStream pending = new ByteArrayOutputStream();
 
     /** Adds received bytes and returns every complete frame in wire order. */
     public List<RespFrame> feed(byte[] bytes) throws ProtocolException {
-        if (bytes.length > 0) pending.writeBytes(bytes);
-        if (pending.size() > MAX_FRAME_BYTES) throw new ProtocolException("ERR protocol frame exceeds 16 MiB");
-        byte[] input = pending.toByteArray();
-        int offset = 0;
-        List<RespFrame> frames = new ArrayList<>();
-        while (offset < input.length) {
-            ParseResult parsed = parse(input, offset, 0);
-            if (parsed == null) break;
-            frames.add(parsed.frame());
-            offset = parsed.nextOffset();
+        try {
+            if (bytes.length > 0) pending.writeBytes(bytes);
+            if (pending.size() > MAX_FRAME_BYTES) throw new ProtocolException("ERR protocol frame exceeds 16 MiB");
+            byte[] input = pending.toByteArray();
+            int offset = 0;
+            List<RespFrame> frames = new ArrayList<>();
+            while (offset < input.length) {
+                ParseResult parsed = parse(input, offset, 0);
+                if (parsed == null) break;
+                frames.add(parsed.frame());
+                offset = parsed.nextOffset();
+            }
+            pending.reset();
+            pending.writeBytes(Arrays.copyOfRange(input, offset, input.length));
+            return frames;
+        } catch (ProtocolException failure) {
+            pending.reset();
+            throw failure;
         }
-        pending.reset();
-        pending.writeBytes(Arrays.copyOfRange(input, offset, input.length));
-        return frames;
     }
 
     /** Returns whether a partial frame is waiting for additional bytes. */
@@ -82,7 +87,7 @@ public final class RespDecoder {
         if (count == -1) return new ParseResult(new RespFrame.NullValue(), line.nextOffset());
         if (count < 0) throw new ProtocolException("ERR invalid array length");
         if (count > MAX_ARRAY_ELEMENTS) {
-            throw new ProtocolException("ERR RESP array exceeds 1000000 elements");
+            throw new ProtocolException("ERR RESP array exceeds 1024 elements");
         }
         List<RespFrame> values = new ArrayList<>(count);
         int current = line.nextOffset();

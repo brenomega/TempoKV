@@ -11,18 +11,19 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.channels.ServerSocketChannel;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Exposes the bounded TempoKV SQL language over a dedicated non-blocking textual TCP endpoint.
  */
 public final class SqlServer implements AutoCloseable {
+    private static final int MAX_CONNECTIONS = 4_096;
     private final int port;
     private final MetricsRegistry metrics;
     private final CommandDispatcher dispatcher;
     private final Authenticator authenticator;
     private final AccessController accessController;
-    private final AtomicLong activeConnections = new AtomicLong();
+    private final ConnectionLimiter connections =
+            new ConnectionLimiter(MAX_CONNECTIONS);
     private ServerSocketChannel socket;
     private NioEventLoop eventLoop;
 
@@ -69,21 +70,30 @@ public final class SqlServer implements AutoCloseable {
             PlanExecutor executor =
                     new PlanExecutor(dispatcher, accessController);
             eventLoop.start(socket, channel -> {
+                if (!connections.tryAcquire()) {
+                    metrics.incrementCounter("sql.connection_rejections");
+                    throw new IOException("SQL connection limit reached");
+                }
                 metrics.incrementCounter("sql.connections");
                 metrics.setGauge(
-                        "sql.connections_active",
-                        activeConnections.incrementAndGet());
-                return new ClientConnection(
-                        channel,
-                        new SqlConnectionHandler(
-                                authenticator,
-                                new SqlCompiler(),
-                                executor,
-                                new SqlResultEncoder(),
-                                metrics),
-                        () -> metrics.setGauge(
-                                "sql.connections_active",
-                                activeConnections.decrementAndGet()));
+                        "sql.connections_active", connections.active());
+                try {
+                    return new ClientConnection(
+                            channel,
+                            new SqlConnectionHandler(
+                                    authenticator,
+                                    new SqlCompiler(),
+                                    executor,
+                                    new SqlResultEncoder(),
+                                    metrics),
+                            () -> metrics.setGauge(
+                                    "sql.connections_active",
+                                    connections.release()));
+                } catch (RuntimeException failure) {
+                    metrics.setGauge(
+                            "sql.connections_active", connections.release());
+                    throw failure;
+                }
             });
         } catch (IOException | RuntimeException exception) {
             close();

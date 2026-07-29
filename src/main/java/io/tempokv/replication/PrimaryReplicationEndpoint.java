@@ -15,9 +15,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -31,6 +31,11 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
     static final byte CAUGHT_UP = 3;
     static final byte ERROR = 4;
     static final int MAX_FRAME_BYTES = 128 * 1024 * 1024;
+    private static final int MAX_REPLICA_CONNECTIONS = 64;
+    private static final int MAX_PENDING_COMMITS = 1_024;
+    private static final long MAX_PENDING_COMMIT_BYTES = 64L * 1024 * 1024;
+    private static final int REPLICA_SOCKET_TIMEOUT_MILLIS = 15_000;
+    private static final int MAX_REPLICA_ID_BYTES = 128;
 
     private final int configuredPort;
     private final String token;
@@ -85,7 +90,13 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
      * Enqueues a newly committed record for every replica registered under the commit monitor.
      */
     public void publish(CommitRecord record) {
-        subscriptions.values().forEach(subscription -> subscription.records().add(record));
+        subscriptions.values().forEach(subscription -> {
+            if (!subscription.offer(record)) {
+                metrics.incrementCounter(
+                        "replication.slow_replica_disconnects");
+                subscription.close();
+            }
+        });
     }
 
     /** Returns the bound replication port, including an operating-system assigned port. */
@@ -106,6 +117,13 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
             try {
                 Socket socket = serverSocket.accept();
                 socket.setTcpNoDelay(true);
+                socket.setSoTimeout(REPLICA_SOCKET_TIMEOUT_MILLIS);
+                if (sockets.size() >= MAX_REPLICA_CONNECTIONS) {
+                    metrics.incrementCounter(
+                            "replication.connection_rejections");
+                    socket.close();
+                    continue;
+                }
                 sockets.add(socket);
                 Thread.ofPlatform()
                         .daemon(true)
@@ -134,7 +152,8 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
                         Subscription created =
                                 new Subscription(
                                         handshake.replicaId(),
-                                        new LinkedBlockingQueue<>(),
+                                        new ArrayBlockingQueue<>(
+                                                MAX_PENDING_COMMITS),
                                         socket);
                         Subscription replaced =
                                 subscriptions.put(handshake.replicaId(), created);
@@ -156,10 +175,11 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
             writeCaughtUp(output, initial.plan().primaryVersion());
             while (running && !subscription.closed()) {
                 CommitRecord record =
-                        subscription.records().poll(500, TimeUnit.MILLISECONDS);
+                        subscription.poll(500, TimeUnit.MILLISECONDS);
                 if (record == null) continue;
                 writeFrame(output, COMMIT, walCodec.encode(record));
                 readAcknowledgement(input, replicaId, record.version());
+                subscription.complete(record);
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
@@ -188,7 +208,10 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
         }
         String replicaId = input.readUTF().trim();
         long version = input.readLong();
-        if (replicaId.isEmpty() || version < 0) {
+        if (replicaId.isEmpty()
+                || replicaId.getBytes(StandardCharsets.UTF_8).length
+                        > MAX_REPLICA_ID_BYTES
+                || version < 0) {
             throw new IOException("Invalid replica identity or version");
         }
         return new Handshake(replicaId, version);
@@ -283,6 +306,7 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
             String replicaId,
             BlockingQueue<CommitRecord> records,
             Socket socket,
+            java.util.concurrent.atomic.AtomicLong pendingBytes,
             java.util.concurrent.atomic.AtomicBoolean flag) {
         Subscription(
                 String replicaId,
@@ -292,7 +316,34 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
                     replicaId,
                     records,
                     socket,
+                    new java.util.concurrent.atomic.AtomicLong(),
                     new java.util.concurrent.atomic.AtomicBoolean());
+        }
+
+        boolean offer(CommitRecord record) {
+            long recordBytes = estimatedBytes(record);
+            while (true) {
+                long current = pendingBytes.get();
+                if (recordBytes > MAX_PENDING_COMMIT_BYTES - current) {
+                    return false;
+                }
+                if (pendingBytes.compareAndSet(
+                        current, current + recordBytes)) {
+                    break;
+                }
+            }
+            if (records.offer(record)) return true;
+            pendingBytes.addAndGet(-recordBytes);
+            return false;
+        }
+
+        CommitRecord poll(long timeout, TimeUnit unit)
+                throws InterruptedException {
+            return records.poll(timeout, unit);
+        }
+
+        void complete(CommitRecord record) {
+            pendingBytes.addAndGet(-estimatedBytes(record));
         }
 
         boolean closed() {
@@ -306,6 +357,17 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
             } catch (IOException ignored) {
                 // Closing an already disconnected duplicate is idempotent.
             }
+        }
+
+        private static long estimatedBytes(CommitRecord record) {
+            long bytes = 32;
+            for (io.tempokv.transaction.Mutation mutation
+                    : record.mutations()) {
+                bytes += 32L
+                        + mutation.key().getBytes(StandardCharsets.UTF_8).length
+                        + mutation.valueSize();
+            }
+            return bytes;
         }
     }
 }

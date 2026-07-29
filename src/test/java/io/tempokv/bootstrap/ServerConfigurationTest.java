@@ -50,4 +50,21 @@ class ServerConfigurationTest {
         assertThrows(ConfigurationException.class,
                 () -> ServerConfiguration.load(new String[]{"--resp-port=0"}, Map.of()));
     }
+
+    /** Rejects replication identity fields before modified-UTF handshake encoding. */
+    @Test
+    void boundsReplicationIdentityConfiguration() {
+        assertThrows(
+                ConfigurationException.class,
+                () -> ServerConfiguration.load(
+                        new String[]{"--node-id=" + "n".repeat(129)},
+                        Map.of()));
+        assertThrows(
+                ConfigurationException.class,
+                () -> ServerConfiguration.load(
+                        new String[]{
+                                "--replication-token=" + "s".repeat(4_097)
+                        },
+                        Map.of()));
+    }
 }

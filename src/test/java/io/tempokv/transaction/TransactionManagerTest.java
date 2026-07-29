@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Verifies stable snapshots, atomic write sets, rollback, and deterministic write conflicts. */
@@ -98,6 +99,37 @@ class TransactionManagerTest {
         assertEquals(0L, fixture.versions.currentVersion());
         assertEquals(0, fixture.snapshots.activeCount());
         assertFalse(fixture.storage.get("key", NOW).isPresent());
+    }
+
+    /** Bounds per-session staged mutations before a client can retain unlimited transaction state. */
+    @Test
+    void rejectsUnboundedTransactionWriteSet() {
+        TransactionContext context = new TransactionContext(0);
+        for (int index = 0; index < 4_096; index++) {
+            context.stage(Mutation.tombstone("key-" + index));
+        }
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> context.stage(Mutation.tombstone("overflow")));
+
+        assertEquals("ERR transaction write set exceeds 4096 mutations", failure.getMessage());
+    }
+
+    /** Rejects a repeated key before it can create a WAL record storage cannot apply. */
+    @Test
+    void rejectsRepeatedKeyInOneTransaction() {
+        TransactionContext context = new TransactionContext(0);
+        context.stage(Mutation.put("key", bytes("first")));
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> context.stage(Mutation.put("key", bytes("second"))));
+
+        assertEquals(
+                "ERR transaction contains multiple mutations for key",
+                failure.getMessage());
+        assertEquals(1, context.writeSet().size());
     }
 
     private static byte[] bytes(String value) {

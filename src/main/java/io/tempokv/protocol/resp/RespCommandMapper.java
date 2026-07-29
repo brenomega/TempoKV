@@ -15,6 +15,10 @@ import java.util.Objects;
 
 /** Maps supported RESP request frames to typed application commands. */
 public final class RespCommandMapper {
+    private static final int MAX_COMMAND_NAME_BYTES = 64;
+    private static final int MAX_USERNAME_BYTES = 128;
+    private static final int MAX_PASSWORD_BYTES = 4_096;
+
     /**
      * Extracts an AUTH handshake before ordinary command mapping, or returns empty for any other
      * command.
@@ -26,17 +30,22 @@ public final class RespCommandMapper {
                 || !(values.getFirst() instanceof RespFrame.BulkString name)) {
             return Optional.empty();
         }
-        String command = new String(
-                name.value(), StandardCharsets.US_ASCII)
-                .toUpperCase(Locale.ROOT);
+        String command = commandName(name.value());
         if (!command.equals("AUTH")) return Optional.empty();
         if (values.size() != 3) {
             throw new CommandMappingException(
                     "ERR wrong number of arguments for command");
         }
+        byte[] username = argument(values, 1);
+        byte[] password = argument(values, 2);
+        if (username.length > MAX_USERNAME_BYTES
+                || password.length > MAX_PASSWORD_BYTES) {
+            throw new CommandMappingException(
+                    "ERR credentials exceed maximum length");
+        }
         return Optional.of(new Credentials(
-                new String(argument(values, 1), StandardCharsets.UTF_8),
-                argument(values, 2)));
+                new String(username, StandardCharsets.UTF_8),
+                password));
     }
 
     /** Maps supported RESP requests to E2 administrative or E3 key-value commands. */
@@ -44,7 +53,7 @@ public final class RespCommandMapper {
         if (!(frame instanceof RespFrame.Array(List<RespFrame> values)) || values.isEmpty() || !(values.getFirst() instanceof RespFrame.BulkString name)) {
             throw new CommandMappingException("ERR expected an array beginning with a bulk-string command");
         }
-        String command = new String(name.value(), StandardCharsets.US_ASCII).toUpperCase(Locale.ROOT);
+        String command = commandName(name.value());
         if ("PING".equals(command)) {
             if (values.size() != 1) throw new CommandMappingException("ERR wrong number of arguments for command");
             return new AdminCommand(AdminCommand.Kind.PING);
@@ -154,6 +163,16 @@ public final class RespCommandMapper {
         catch (ArithmeticException exception) { throw new CommandMappingException("ERR " + name + " is out of range"); }
     }
 
+    private static String commandName(byte[] value)
+            throws CommandMappingException {
+        if (value.length > MAX_COMMAND_NAME_BYTES) {
+            throw new CommandMappingException(
+                    "ERR command name exceeds maximum length");
+        }
+        return new String(value, StandardCharsets.US_ASCII)
+                .toUpperCase(Locale.ROOT);
+    }
+
     /** Reports a syntactically valid but unsupported client request. */
     public static final class CommandMappingException extends Exception { public CommandMappingException(String message) { super(message); } }
 
@@ -162,12 +181,20 @@ public final class RespCommandMapper {
         /** Requires a non-blank username and copies password bytes. */
         public Credentials {
             username = Objects.requireNonNull(username, "username");
+            byte[] suppliedPassword =
+                    Objects.requireNonNull(password, "password");
             if (username.isBlank()) {
                 throw new IllegalArgumentException("ERR username must not be blank");
             }
+            if (username.getBytes(StandardCharsets.UTF_8).length
+                    > MAX_USERNAME_BYTES
+                    || suppliedPassword.length > MAX_PASSWORD_BYTES) {
+                throw new IllegalArgumentException(
+                        "ERR credentials exceed maximum length");
+            }
             password = Arrays.copyOf(
-                    Objects.requireNonNull(password, "password"),
-                    password.length);
+                    suppliedPassword,
+                    suppliedPassword.length);
         }
         /** Returns a defensive password copy. */
         @Override public byte[] password() {

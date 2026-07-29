@@ -47,6 +47,20 @@ sourceSets.main {
     java.srcDir(generatedSqlParserSources)
 }
 
+val jmh by sourceSets.creating {
+    java.srcDir("src/jmh/java")
+    compileClasspath += sourceSets.main.get().output
+    runtimeClasspath += output + compileClasspath
+}
+
+configurations[jmh.implementationConfigurationName]
+    .extendsFrom(configurations.implementation.get())
+
+dependencies {
+    add(jmh.implementationConfigurationName, "org.openjdk.jmh:jmh-core:1.37")
+    add(jmh.annotationProcessorConfigurationName, "org.openjdk.jmh:jmh-generator-annprocess:1.37")
+}
+
 val generateSqlLexer = tasks.register<JavaExec>("generateSqlLexer") {
     description = "Generates the TempoKV SQL lexer from its JFlex specification."
     group = "build"
@@ -102,6 +116,31 @@ configurations[integrationTest.runtimeOnlyConfigurationName]
 
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
+}
+
+tasks.register<JavaExec>("jmh") {
+    description = "Runs reproducible in-process JMH benchmarks."
+    group = "benchmark"
+    dependsOn(jmh.classesTaskName)
+    classpath = jmh.runtimeClasspath
+    mainClass.set("org.openjdk.jmh.Main")
+    val resultFile = layout.buildDirectory.file("benchmarks/jmh-result.json")
+    doFirst {
+        resultFile.get().asFile.parentFile.mkdirs()
+        val configured = providers.gradleProperty("jmhArgs").orNull
+        args = if (configured.isNullOrBlank()) {
+            listOf(
+                "-wi", "2",
+                "-i", "3",
+                "-w", "500ms",
+                "-r", "1s",
+                "-f", "1",
+                "-rf", "json",
+                "-rff", resultFile.get().asFile.absolutePath)
+        } else {
+            configured.trim().split(Regex("\\s+"))
+        }
+    }
 }
 
 val integrationTestTask = tasks.register<Test>("integrationTest") {

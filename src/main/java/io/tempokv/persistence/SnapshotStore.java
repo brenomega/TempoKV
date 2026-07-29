@@ -30,6 +30,8 @@ public final class SnapshotStore {
     private static final int MAGIC = 0x544B5350;
     private static final short FORMAT_VERSION = 1;
     private static final int MAX_FIELD_BYTES = 64 * 1024 * 1024;
+    private static final long MAX_ENCODED_BYTES =
+            MAX_FIELD_BYTES + 4L + 2L + 4L + 4L;
     private static final String SUFFIX = ".snapshot";
     private final Path directory;
     private final FileSystemAdapter fileSystem;
@@ -56,7 +58,7 @@ public final class SnapshotStore {
             fileSystem.force(channel);
         }
         fileSystem.moveAtomically(temporary, target);
-        StorageSnapshot validated = decode(fileSystem.readAllBytes(target));
+        StorageSnapshot validated = decode(readSnapshot(target));
         if (validated.version() != snapshot.version()) {
             throw new IOException("Published snapshot cutoff changed during validation");
         }
@@ -72,7 +74,7 @@ public final class SnapshotStore {
         IOException failures = null;
         for (Path candidate : candidates) {
             try {
-                return Optional.of(decode(fileSystem.readAllBytes(candidate)));
+                return Optional.of(decode(readSnapshot(candidate)));
             } catch (IOException | RuntimeException exception) {
                 IOException failure = exception instanceof IOException io
                         ? io
@@ -80,6 +82,9 @@ public final class SnapshotStore {
                 if (failures == null) failures = failure;
                 else failures.addSuppressed(failure);
             }
+        }
+        if (!candidates.isEmpty()) {
+            throw new IOException("No valid snapshot could be loaded", failures);
         }
         return Optional.empty();
     }
@@ -101,7 +106,7 @@ public final class SnapshotStore {
         List<StorageSnapshot> valid = new ArrayList<>();
         for (Path candidate : snapshotsNewestFirst()) {
             try {
-                valid.add(decode(fileSystem.readAllBytes(candidate)));
+                valid.add(decode(readSnapshot(candidate)));
             } catch (IOException | RuntimeException ignored) {
                 // Invalid artifacts are deliberately excluded from the compaction watermark.
             }
@@ -135,6 +140,9 @@ public final class SnapshotStore {
             }
         }
         byte[] payload = payloadBytes.toByteArray();
+        if (payload.length > MAX_FIELD_BYTES) {
+            throw new IOException("Snapshot payload exceeds 64 MiB");
+        }
         CRC32 checksum = new CRC32();
         checksum.update(payload);
         ByteArrayOutputStream result = new ByteArrayOutputStream(payload.length + 18);
@@ -222,6 +230,13 @@ public final class SnapshotStore {
         return snapshots;
     }
 
+    private byte[] readSnapshot(Path path) throws IOException {
+        if (fileSystem.size(path) > MAX_ENCODED_BYTES) {
+            throw new IOException("Snapshot artifact exceeds maximum encoded size");
+        }
+        return fileSystem.readAllBytes(path);
+    }
+
     private Path path(long version) {
         return directory.resolve(String.format("snapshot-%020d%s", version, SUFFIX));
     }
@@ -304,6 +319,13 @@ public final class SnapshotStore {
     }
 
     private static void writeFully(FileChannel channel, ByteBuffer buffer) throws IOException {
-        while (buffer.hasRemaining()) channel.write(buffer);
+        int zeroProgressWrites = 0;
+        while (buffer.hasRemaining()) {
+            if (channel.write(buffer) > 0) {
+                zeroProgressWrites = 0;
+            } else if (++zeroProgressWrites >= 16) {
+                throw new IOException("Snapshot write made no progress");
+            }
+        }
     }
 }

@@ -65,6 +65,43 @@ class WalRecoveryTest {
         assertThrows(java.io.IOException.class, wal::replay);
     }
 
+    /** Treats an incomplete record before a later segment as corruption, not a torn final tail. */
+    @Test
+    void rejectsTornRecordOutsideFinalSegment() throws Exception {
+        FileWriteAheadLog wal =
+                new FileWriteAheadLog(
+                        directory,
+                        new FileSystemAdapter(),
+                        FsyncPolicy.ALWAYS,
+                        256);
+        wal.append(new CommitRecord(
+                1,
+                Instant.EPOCH,
+                List.of(Mutation.put("first", new byte[200]))));
+        wal.append(new CommitRecord(
+                2,
+                Instant.EPOCH.plusSeconds(1),
+                List.of(Mutation.put("second", new byte[200]))));
+        List<Path> segments;
+        try (var paths = java.nio.file.Files.list(directory.resolve("wal"))) {
+            segments = paths.filter(path -> path.toString().endsWith(".wal"))
+                    .sorted()
+                    .toList();
+        }
+        java.nio.file.Files.write(
+                segments.getFirst(),
+                new byte[] {0x54, 0x4b},
+                java.nio.file.StandardOpenOption.APPEND);
+
+        assertThrows(
+                java.io.IOException.class,
+                () -> new FileWriteAheadLog(
+                        directory,
+                        new FileSystemAdapter(),
+                        FsyncPolicy.ALWAYS,
+                        256));
+    }
+
     private Path segment() throws Exception {
         try (var files = java.nio.file.Files.list(directory.resolve("wal"))) {
             return files.filter(path -> path.toString().endsWith(".wal")).findFirst().orElseThrow();

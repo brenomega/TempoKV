@@ -8,16 +8,17 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.channels.ServerSocketChannel;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicLong;
 
 /** Exposes RESP over TCP without constructing application or storage components. */
 public final class RespServer implements AutoCloseable {
+    private static final int MAX_CONNECTIONS = 4_096;
     private final int port;
     private final MetricsRegistry metrics;
     private final CommandDispatcher dispatcher;
     private final Authenticator authenticator;
     private final AccessController accessController;
-    private final AtomicLong activeConnections = new AtomicLong();
+    private final ConnectionLimiter connections =
+            new ConnectionLimiter(MAX_CONNECTIONS);
     private ServerSocketChannel socket;
     private NioEventLoop eventLoop;
 
@@ -56,19 +57,29 @@ public final class RespServer implements AutoCloseable {
                     ignored -> metrics.incrementCounter(
                             "resp.event_loop_failures"));
             eventLoop.start(socket, channel -> {
+                if (!connections.tryAcquire()) {
+                    metrics.incrementCounter("resp.connection_rejections");
+                    throw new IOException("RESP connection limit reached");
+                }
                 metrics.incrementCounter("resp.connections");
                 metrics.setGauge(
-                        "resp.connections_active", activeConnections.incrementAndGet());
-                return new ClientConnection(
-                        channel,
-                        new RespConnectionHandler(
-                                authenticator,
-                                accessController,
-                                dispatcher,
-                                metrics),
-                        () -> metrics.setGauge(
-                                "resp.connections_active",
-                                activeConnections.decrementAndGet()));
+                        "resp.connections_active", connections.active());
+                try {
+                    return new ClientConnection(
+                            channel,
+                            new RespConnectionHandler(
+                                    authenticator,
+                                    accessController,
+                                    dispatcher,
+                                    metrics),
+                            () -> metrics.setGauge(
+                                    "resp.connections_active",
+                                    connections.release()));
+                } catch (RuntimeException failure) {
+                    metrics.setGauge(
+                            "resp.connections_active", connections.release());
+                    throw failure;
+                }
             });
         } catch (IOException | RuntimeException exception) {
             close();

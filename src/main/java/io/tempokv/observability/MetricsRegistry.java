@@ -63,10 +63,26 @@ public final class MetricsRegistry {
     private static String validateName(String name) {
         String normalized = Objects.requireNonNull(name, "name").trim();
         if (normalized.isEmpty() || normalized.length() > MAX_METRIC_NAME_LENGTH
-                || !normalized.matches("[a-z][a-z0-9_.-]*")) {
+                || !isValidMetricName(normalized)) {
             throw new IllegalArgumentException("Metric name must match [a-z][a-z0-9_.-]*");
         }
         return normalized;
+    }
+
+    private static boolean isValidMetricName(String name) {
+        char first = name.charAt(0);
+        if (first < 'a' || first > 'z') return false;
+        for (int index = 1; index < name.length(); index++) {
+            char character = name.charAt(index);
+            boolean lowercaseLetter = character >= 'a' && character <= 'z';
+            boolean digit = character >= '0' && character <= '9';
+            if (!lowercaseLetter && !digit
+                    && character != '_' && character != '.'
+                    && character != '-') {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** Stores concurrent latency aggregates for one metric. */

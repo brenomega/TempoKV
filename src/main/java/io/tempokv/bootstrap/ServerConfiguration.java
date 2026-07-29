@@ -66,6 +66,13 @@ public record ServerConfiguration(
         nodeId = requireText(nodeId, "nodeId");
         primaryHost = requireText(primaryHost, "primaryHost");
         replicationToken = requireText(replicationToken, "replicationToken");
+        if (nodeId.getBytes(StandardCharsets.UTF_8).length > 128) {
+            throw new ConfigurationException("nodeId exceeds 128 UTF-8 bytes");
+        }
+        if (replicationToken.getBytes(StandardCharsets.UTF_8).length > 4_096) {
+            throw new ConfigurationException(
+                    "replicationToken exceeds 4096 UTF-8 bytes");
+        }
         historyRetention = Objects.requireNonNull(historyRetention, "historyRetention");
         if (historyRetention.isZero() || historyRetention.isNegative()) {
             throw new ConfigurationException("History retention must be positive");

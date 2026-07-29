@@ -51,9 +51,9 @@ public final class ReplicaApplier {
      */
     public synchronized void apply(CommitRecord record) throws IOException {
         Objects.requireNonNull(record, "record");
-        if (record.version() <= state.appliedVersion()) {
+        if (record.version() != state.appliedVersion() + 1) {
             state.markFailed();
-            throw new IOException("Replica commit is duplicate or out of order");
+            throw new IOException("Replica commit is duplicate, gapped, or out of order");
         }
         wal.append(record);
         storage.apply(record);

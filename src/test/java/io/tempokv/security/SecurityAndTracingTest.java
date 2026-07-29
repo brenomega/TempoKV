@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** Verifies credential resolution, command/prefix ACLs, and value-free tracing aggregates. */
 class SecurityAndTracingTest {
@@ -88,6 +89,23 @@ class SecurityAndTracingTest {
                 metrics.snapshot().latencies().get("known.latency").p95Nanos());
     }
 
+    /** Keeps the bounded ASCII metric namespace intact without per-update regex compilation. */
+    @Test
+    void rejectsInvalidMetricNames() {
+        MetricsRegistry metrics = new MetricsRegistry();
+        metrics.incrementCounter("valid.metric-1_name");
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> metrics.incrementCounter("Invalid"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> metrics.incrementCounter("invalid metric"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> metrics.incrementCounter("métric"));
+    }
+
     /** Resolves RESP AUTH before applying the same identity ACL to subsequent commands. */
     @Test
     void respAuthenticationEstablishesAclIdentity() {
@@ -131,6 +149,30 @@ class SecurityAndTracingTest {
                 responses.stream()
                         .map(bytes -> new String(bytes, StandardCharsets.UTF_8))
                         .toList());
+    }
+
+    /** Bounds credential material before authentication performs defensive copies. */
+    @Test
+    void respAuthenticationRejectsOversizedCredentials() {
+        MetricsRegistry metrics = new MetricsRegistry();
+        RespConnectionHandler handler = new RespConnectionHandler(
+                Authenticator.users(Map.of("reader", "secret")),
+                AccessController.permissive(),
+                new CommandDispatcher(
+                        new CommandValidator(),
+                        List.of(),
+                        new CommandTracer(metrics)),
+                metrics);
+        List<byte[]> responses = new java.util.ArrayList<>();
+
+        handler.onBytes(
+                request("AUTH", "reader", "x".repeat(4_097))
+                        .getBytes(StandardCharsets.UTF_8),
+                responses::add);
+
+        assertEquals(
+                "-ERR credentials exceed maximum length\r\n",
+                new String(responses.getFirst(), StandardCharsets.UTF_8));
     }
 
     private static String request(String... values) {

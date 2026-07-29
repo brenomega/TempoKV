@@ -6,6 +6,7 @@ import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
+import java.net.StandardSocketOptions;
 import java.util.Iterator;
 import java.util.Objects;
 import java.util.function.Consumer;
@@ -65,14 +66,18 @@ public final class NioEventLoop implements AutoCloseable {
     private void accept(SelectionKey key) throws IOException {
         ServerSocketChannel server = (ServerSocketChannel) key.channel(); SocketChannel socket;
         while ((socket = server.accept()) != null) {
+            ClientConnection connection = null;
             try {
                 socket.configureBlocking(false);
-                ClientConnection connection =
+                socket.setOption(
+                        StandardSocketOptions.TCP_NODELAY, true);
+                connection =
                         ((ConnectionFactory) key.attachment()).create(socket);
                 socket.register(selector, SelectionKey.OP_READ, connection);
             } catch (IOException | RuntimeException exception) {
                 try {
-                    socket.close();
+                    if (connection == null) socket.close();
+                    else connection.close();
                 } catch (IOException closeFailure) {
                     exception.addSuppressed(closeFailure);
                 }

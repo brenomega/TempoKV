@@ -14,19 +14,32 @@ public final class CommitCoordinator {
     private final StorageEngine storage;
     private final Clock clock;
     private final DurableAppender writeAheadLog;
+    private final Consumer<Throwable> failureHandler;
     private Consumer<CommitRecord> publisher = ignored -> { };
+    private Throwable terminalFailure;
 
     /** Creates an in-memory coordinator whose E5 WAL port is intentionally a no-op. */
     public CommitCoordinator(VersionGenerator versions, StorageEngine storage, Clock clock) {
-        this(versions, storage, clock, ignored -> { });
+        this(versions, storage, clock, ignored -> { }, ignored -> { });
     }
 
     /** Creates a coordinator with an optional durable append action executed before publication. */
     public CommitCoordinator(VersionGenerator versions, StorageEngine storage, Clock clock, DurableAppender writeAheadLog) {
+        this(versions, storage, clock, writeAheadLog, ignored -> { });
+    }
+
+    /** Creates a coordinator that reports terminal commit-pipeline failures to node health. */
+    public CommitCoordinator(
+            VersionGenerator versions,
+            StorageEngine storage,
+            Clock clock,
+            DurableAppender writeAheadLog,
+            Consumer<Throwable> failureHandler) {
         this.versions = Objects.requireNonNull(versions, "versions");
         this.storage = Objects.requireNonNull(storage, "storage");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.writeAheadLog = Objects.requireNonNull(writeAheadLog, "writeAheadLog");
+        this.failureHandler = Objects.requireNonNull(failureHandler, "failureHandler");
     }
 
     /** Returns a snapshot cut only after any in-flight commit has completed publication. */
@@ -59,16 +72,40 @@ public final class CommitCoordinator {
             List<Mutation> mutations, Runnable validation) {
         Objects.requireNonNull(mutations, "mutations");
         if (mutations.isEmpty()) throw new IllegalArgumentException("Commit requires at least one mutation");
+        if (terminalFailure != null) throw new CommitFailedException(terminalFailure);
         Objects.requireNonNull(validation, "validation").run();
         CommitRecord record = new CommitRecord(versions.nextVersion(), Instant.now(clock), mutations);
         try {
             writeAheadLog.append(record);
         } catch (Exception exception) {
+            markTerminal(exception);
             throw new CommitFailedException(exception);
         }
-        storage.apply(record);
-        publisher.accept(record);
+        try {
+            storage.apply(record);
+        } catch (RuntimeException | Error failure) {
+            markTerminal(failure);
+            throw failure;
+        }
+        try {
+            publisher.accept(record);
+        } catch (RuntimeException failure) {
+            reportFailure(failure);
+        }
         return record;
+    }
+
+    private void markTerminal(Throwable failure) {
+        if (terminalFailure == null) terminalFailure = failure;
+        reportFailure(failure);
+    }
+
+    private void reportFailure(Throwable failure) {
+        try {
+            failureHandler.accept(failure);
+        } catch (RuntimeException handlerFailure) {
+            failure.addSuppressed(handlerFailure);
+        }
     }
 
     /** Allows a durable append implementation to report checked infrastructure failures. */
