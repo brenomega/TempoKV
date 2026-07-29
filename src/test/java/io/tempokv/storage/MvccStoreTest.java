@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-/** Verifies the E3 MVCC visibility and history invariants with a deterministic clock. */
+/** Verifies MVCC visibility and history invariants with a deterministic clock. */
 class MvccStoreTest {
     private static final Instant NOW = Instant.parse("2026-01-01T00:00:00Z");
     private final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);

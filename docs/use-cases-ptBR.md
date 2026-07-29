@@ -9,29 +9,29 @@ Versão arquitetural 1.0 • Documento consistente com os demais artefatos da s�
 
 # 1. Escopo e convenções
 
-Este documento descreve os fluxos funcionais que definem o produto. Os nomes entre colchetes são classes exatas do diagrama conceitual; os identificadores E1–E8 apontam para o plano de implementação.
+Este documento descreve os fluxos funcionais que definem o produto. Os nomes entre colchetes são classes exatas do diagrama conceitual.
 
 > Nota de leitura
 > RESP e SQL são front-ends diferentes. Depois do mapeamento ou planejamento, ambos usam CommandDispatcher, handlers, CommitCoordinator e StorageEngine. Nenhum caso de uso cria um storage paralelo para SQL.
 
 # 2. Catálogo resumido
 
-| **ID** | **Caso de uso**                                              | **Ator principal**                                  | **Etapa** |
-|--------|--------------------------------------------------------------|-----------------------------------------------------|-----------|
-| UC-00  | Iniciar uma instância local ou por Docker                    | Operador / plataforma de containers                 | E1        |
-| UC-01  | Recuperar o estado após reinício ou falha                    | TempoKvServer / operador                            | E5        |
-| UC-02  | Conectar por RESP e executar PING                            | Cliente Redis                                       | E2        |
-| UC-03  | Gravar, consultar e excluir o valor atual com TTL            | Aplicação cliente Redis                             | E3        |
-| UC-04  | Executar consulta ou mutação pela interface SQL              | Operador, desenvolvedor ou aplicação administrativa | E6        |
-| UC-05  | Consultar valor em uma versão ou instante histórico          | Cliente Redis ou SQL                                | E4        |
-| UC-06  | Inspecionar histórico e comparar versões                     | Auditor ou operador                                 | E4        |
-| UC-07  | Restaurar uma versão histórica                               | Operador autorizado                                 | E4        |
-| UC-08  | Executar transação com snapshot consistente                  | Aplicação cliente                                   | E7        |
-| UC-09  | Detectar e abortar conflito concorrente                      | Duas ou mais aplicações clientes                    | E7        |
-| UC-10  | Expirar chave automaticamente preservando o evento histórico | TempoKvServer / aplicação cliente                   | E5        |
-| UC-11  | Criar snapshot e compactar o WAL                             | TempoKvServer / operador                            | E5        |
-| UC-12  | Consultar saúde, métricas e informações administrativas      | Operador, monitor ou cliente autorizado             | E7        |
-| UC-13  | Replicar commits para uma réplica e servir leitura read-only | Nó primário, nó réplica e aplicação leitora         | E8        |
+| **ID** | **Caso de uso**                                              | **Ator principal** |
+|--------|--------------------------------------------------------------|----------------------------------------------------- |
+| UC-00  | Iniciar uma instância local ou por Docker                    | Operador / plataforma de containers |
+| UC-01  | Recuperar o estado após reinício ou falha                    | TempoKvServer / operador |
+| UC-02  | Conectar por RESP e executar PING                            | Cliente Redis |
+| UC-03  | Gravar, consultar e excluir o valor atual com TTL            | Aplicação cliente Redis |
+| UC-04  | Executar consulta ou mutação pela interface SQL              | Operador, desenvolvedor ou aplicação administrativa |
+| UC-05  | Consultar valor em uma versão ou instante histórico          | Cliente Redis ou SQL |
+| UC-06  | Inspecionar histórico e comparar versões                     | Auditor ou operador |
+| UC-07  | Restaurar uma versão histórica                               | Operador autorizado |
+| UC-08  | Executar transação com snapshot consistente                  | Aplicação cliente |
+| UC-09  | Detectar e abortar conflito concorrente                      | Duas ou mais aplicações clientes |
+| UC-10  | Expirar chave automaticamente preservando o evento histórico | TempoKvServer / aplicação cliente |
+| UC-11  | Criar snapshot e compactar o WAL                             | TempoKvServer / operador |
+| UC-12  | Consultar saúde, métricas e informações administrativas      | Operador, monitor ou cliente autorizado |
+| UC-13  | Replicar commits para uma réplica e servir leitura read-only | Nó primário, nó réplica e aplicação leitora |
 
 # UC-00 — Iniciar uma instância local ou por Docker
 
@@ -39,8 +39,6 @@ Este documento descreve os fluxos funcionais que definem o produto. Os nomes ent
 |--------------------|----------------------------------------------------------------------------------------------------------|
 | **Atores**         | Operador / plataforma de containers                                                                      |
 | **Gatilho**        | O operador executa o JAR ou inicia o container.                                                          |
-| **Etapa primária** | E1                                                                                                       |
-| **Validação**      | E1 valida inicialização vazia; E5 adiciona recuperação; E8 valida Docker e papéis primário/réplica.      |
 
 ## Pré-condições
 
@@ -90,8 +88,6 @@ TempoKvApplication, ServerConfiguration, TempoKvServer, FileSystemAdapter, Datab
 |--------------------|--------------------------------------------------------------------------|
 | **Atores**         | TempoKvServer / operador                                                 |
 | **Gatilho**        | TempoKvServer inicia e detecta dados persistidos.                        |
-| **Etapa primária** | E5                                                                       |
-| **Validação**      | E5; regressão adicional em E8 com estado de réplica.                     |
 
 ## Pré-condições
 
@@ -143,8 +139,6 @@ TempoKvServer, RecoveryManager, SnapshotStore, FileSystemAdapter, StorageSnapsho
 |--------------------|----------------------------------------------------------------------------|
 | **Atores**         | Cliente Redis                                                              |
 | **Gatilho**        | O cliente abre uma conexão e envia PING.                                   |
-| **Etapa primária** | E2                                                                         |
-| **Validação**      | E2.                                                                        |
 
 ## Pré-condições
 
@@ -191,8 +185,6 @@ RespServer, NioEventLoop, ClientConnection, Session, RespConnectionHandler, Resp
 |--------------------|----------------------------------------------------------------------------------------------------------------|
 | **Atores**         | Aplicação cliente Redis                                                                                        |
 | **Gatilho**        | O cliente envia SET, GET, TTL, EXPIRE ou DEL.                                                                  |
-| **Etapa primária** | E3                                                                                                             |
-| **Validação**      | E3 valida modo em memória; E5 ativa WAL e E7 adiciona tracing/ACL completo.                                    |
 
 ## Pré-condições
 
@@ -244,8 +236,6 @@ RespConnectionHandler, RespDecoder, RespCommandMapper, KeyValueCommand, Command,
 |--------------------|----------------------------------------------------------------------------------|
 | **Atores**         | Operador, desenvolvedor ou aplicação administrativa                              |
 | **Gatilho**        | O cliente envia SELECT, UPSERT, DELETE ou uma instrução transacional.            |
-| **Etapa primária** | E6                                                                               |
-| **Validação**      | E6; autorização e tracing completos em E7.                                       |
 
 ## Pré-condições
 
@@ -295,8 +285,6 @@ SqlServer, NioEventLoop, ClientConnection, Session, SqlConnectionHandler, TempoL
 |--------------------|-----------------------------------------------------------------------------------|
 | **Atores**         | Cliente Redis ou SQL                                                              |
 | **Gatilho**        | O cliente envia GETAT ou SELECT ... AS OF.                                        |
-| **Etapa primária** | E4                                                                                |
-| **Validação**      | E4; caminho SQL conectado em E6.                                                  |
 
 ## Pré-condições
 
@@ -341,8 +329,6 @@ RespCommandMapper, SqlPlanner, TemporalCommand, ExecutionPlan, CommandDispatcher
 |--------------------|---------------------------------------------------------------------------------|
 | **Atores**         | Auditor ou operador                                                             |
 | **Gatilho**        | O cliente envia HISTORY/DIFF ou consulta SQL equivalente.                       |
-| **Etapa primária** | E4                                                                              |
-| **Validação**      | E4; SQL em E6; GC é validado novamente em E5/E7.                                |
 
 ## Pré-condições
 
@@ -385,8 +371,6 @@ RespCommandMapper, SqlPlanner, TemporalCommand, ExecutionPlan, TemporalCommandHa
 |--------------------|------------------------------------------------------------------------|
 | **Atores**         | Operador autorizado                                                    |
 | **Gatilho**        | O cliente envia RESTOREAT ou SQL equivalente.                          |
-| **Etapa primária** | E4                                                                     |
-| **Validação**      | E4 valida lógica em memória; E5 adiciona durabilidade; E6 conecta SQL. |
 
 ## Pré-condições
 
@@ -433,8 +417,6 @@ RespCommandMapper, SqlPlanner, TemporalCommand, CommandDispatcher, TemporalComma
 |--------------------|--------------------------------------------------------------------------------|
 | **Atores**         | Aplicação cliente                                                              |
 | **Gatilho**        | O cliente envia BEGIN, comandos e COMMIT ou ROLLBACK.                          |
-| **Etapa primária** | E7                                                                             |
-| **Validação**      | E7.                                                                            |
 
 ## Pré-condições
 
@@ -482,8 +464,6 @@ TransactionCommand, CommandDispatcher, TransactionCommandHandler, TransactionMan
 |--------------------|------------------------------------------------------------------------------------------------|
 | **Atores**         | Duas ou mais aplicações clientes                                                               |
 | **Gatilho**        | A segunda transação tenta confirmar uma chave modificada após seu snapshot.                    |
-| **Etapa primária** | E7                                                                                             |
-| **Validação**      | E7.                                                                                            |
 
 ## Pré-condições
 
@@ -528,8 +508,6 @@ Session, TransactionContext, SnapshotManager, TransactionManager, CommitCoordina
 |--------------------|---------------------------------------------------------------------------------|
 | **Atores**         | TempoKvServer / aplicação cliente                                               |
 | **Gatilho**        | O relógio alcança o próximo vencimento do TtlIndex.                             |
-| **Etapa primária** | E5                                                                              |
-| **Validação**      | E5.                                                                             |
 
 ## Pré-condições
 
@@ -574,8 +552,6 @@ ExpirationWorker, TtlIndex, StorageEngine, VersionChain, Mutation, CommitCoordin
 |--------------------|--------------------------------------------------------------------------------------------------|
 | **Atores**         | TempoKvServer / operador                                                                         |
 | **Gatilho**        | Limite de WAL, agenda ou comando administrativo solicita snapshot.                               |
-| **Etapa primária** | E5                                                                                               |
-| **Validação**      | E5 no modo single-node; regras de ACK são completadas em E8.                                     |
 
 ## Pré-condições
 
@@ -625,8 +601,6 @@ SnapshotWriter, SnapshotManager, StorageEngine, MvccStore, StorageSnapshot, KeyI
 |--------------------|--------------------------------------------------------------------------------------------------|
 | **Atores**         | Operador, monitor ou cliente autorizado                                                          |
 | **Gatilho**        | O cliente envia PING, HEALTH ou INFO.                                                            |
-| **Etapa primária** | E7                                                                                               |
-| **Validação**      | E7.                                                                                              |
 
 ## Pré-condições
 
@@ -669,8 +643,6 @@ RespCommandMapper, SqlPlanner, AdminCommand, Authenticator, AccessController, Se
 |--------------------|--------------------------------------------------------------------------------------------------------|
 | **Atores**         | Nó primário, nó réplica e aplicação leitora                                                            |
 | **Gatilho**        | ReplicaClient conecta ao PrimaryReplicationEndpoint.                                                   |
-| **Etapa primária** | E8                                                                                                     |
-| **Validação**      | E8.                                                                                                    |
 
 ## Pré-condições
 
@@ -721,21 +693,21 @@ ReplicationManager, ReplicaState, ServerConfiguration, ReplicaClient, PrimaryRep
 
 # Matriz de rastreabilidade
 
-| **UC** | **Fluxo**                                                    | **Etapas**     | **Classes** | **Componentes principais**                                                                                                                                                                         |
-|--------|--------------------------------------------------------------|----------------|-------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| UC-00  | Iniciar uma instância local ou por Docker                    | E1, E8         | 13          | TempoKvApplication, ServerConfiguration, TempoKvServer, FileSystemAdapter, DatabaseLock, RecoveryManager, RespServer, SqlServer, ExpirationWorker, HistoryGarbageCollector…                        |
-| UC-01  | Recuperar o estado após reinício ou falha                    | E5, E8         | 20          | TempoKvServer, RecoveryManager, SnapshotStore, FileSystemAdapter, StorageSnapshot, StorageEngine, MvccStore, FileWriteAheadLog, WriteAheadLog, WalRecordCodec…                                     |
-| UC-02  | Conectar por RESP e executar PING                            | E2             | 19          | RespServer, NioEventLoop, ClientConnection, Session, RespConnectionHandler, RespDecoder, RespFrame, RespCommandMapper, Command, AdminCommand…                                                      |
-| UC-03  | Gravar, consultar e excluir o valor atual com TTL            | E3, E5, E7     | 28          | RespConnectionHandler, RespDecoder, RespCommandMapper, KeyValueCommand, Command, Authenticator, AccessController, Session, CommandValidator, CommandDispatcher…                                    |
-| UC-04  | Executar consulta ou mutação pela interface SQL              | E6, E7         | 26          | SqlServer, NioEventLoop, ClientConnection, Session, SqlConnectionHandler, TempoLexer, TempoParser, Statement, Expression, SqlSemanticAnalyzer…                                                     |
-| UC-05  | Consultar valor em uma versão ou instante histórico          | E4, E6, E7     | 19          | RespCommandMapper, SqlPlanner, TemporalCommand, ExecutionPlan, CommandDispatcher, TemporalCommandHandler, CommandValidator, AccessController, StorageEngine, MvccStore…                            |
-| UC-06  | Inspecionar histórico e comparar versões                     | E4, E6, E7     | 17          | RespCommandMapper, SqlPlanner, TemporalCommand, ExecutionPlan, TemporalCommandHandler, StorageEngine, MvccStore, VersionChain, VersionedValue, RetentionPolicy…                                    |
-| UC-07  | Restaurar uma versão histórica                               | E4, E5, E6, E7 | 25          | RespCommandMapper, SqlPlanner, TemporalCommand, CommandDispatcher, TemporalCommandHandler, AccessController, Session, StorageEngine, VersionChain, VersionedValue…                                 |
-| UC-08  | Executar transação com snapshot consistente                  | E5, E7         | 21          | TransactionCommand, CommandDispatcher, TransactionCommandHandler, TransactionManager, SnapshotManager, TransactionContext, Session, KeyValueCommandHandler, TemporalCommandHandler, StorageEngine… |
-| UC-09  | Detectar e abortar conflito concorrente                      | E7             | 18          | Session, TransactionContext, SnapshotManager, TransactionManager, CommitCoordinator, VersionGenerator, CommitRecord, StorageEngine, TransactionCommand, TransactionCommandHandler…                 |
-| UC-10  | Expirar chave automaticamente preservando o evento histórico | E5             | 16          | ExpirationWorker, TtlIndex, StorageEngine, VersionChain, Mutation, CommitCoordinator, VersionGenerator, CommitRecord, WriteAheadLog, FsyncPolicy…                                                  |
-| UC-11  | Criar snapshot e compactar o WAL                             | E5, E8         | 21          | SnapshotWriter, SnapshotManager, StorageEngine, MvccStore, StorageSnapshot, KeyIndex, VersionChain, VersionedValue, TtlIndex, SnapshotStore…                                                       |
-| UC-12  | Consultar saúde, métricas e informações administrativas      | E7, E8         | 14          | RespCommandMapper, SqlPlanner, AdminCommand, Authenticator, AccessController, Session, CommandDispatcher, AdminCommandHandler, ServerHealthService, MetricsRegistry…                               |
-| UC-13  | Replicar commits para uma réplica e servir leitura read-only | E8             | 23          | ReplicationManager, ReplicaState, ServerConfiguration, ReplicaClient, PrimaryReplicationEndpoint, SyncCoordinator, SnapshotStore, WriteAheadLog, WalRecordCodec, ReplicaApplier…                   |
+| **UC** | **Fluxo**                                                    | **Classes** | **Componentes principais**                                                                                                                                                                         |
+|--------|--------------------------------------------------------------|-------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| UC-00  | Iniciar uma instância local ou por Docker                    | 13          | TempoKvApplication, ServerConfiguration, TempoKvServer, FileSystemAdapter, DatabaseLock, RecoveryManager, RespServer, SqlServer, ExpirationWorker, HistoryGarbageCollector…                        |
+| UC-01  | Recuperar o estado após reinício ou falha                    | 20          | TempoKvServer, RecoveryManager, SnapshotStore, FileSystemAdapter, StorageSnapshot, StorageEngine, MvccStore, FileWriteAheadLog, WriteAheadLog, WalRecordCodec…                                     |
+| UC-02  | Conectar por RESP e executar PING                            | 19          | RespServer, NioEventLoop, ClientConnection, Session, RespConnectionHandler, RespDecoder, RespFrame, RespCommandMapper, Command, AdminCommand…                                                      |
+| UC-03  | Gravar, consultar e excluir o valor atual com TTL            | 28          | RespConnectionHandler, RespDecoder, RespCommandMapper, KeyValueCommand, Command, Authenticator, AccessController, Session, CommandValidator, CommandDispatcher…                                    |
+| UC-04  | Executar consulta ou mutação pela interface SQL              | 26          | SqlServer, NioEventLoop, ClientConnection, Session, SqlConnectionHandler, TempoLexer, TempoParser, Statement, Expression, SqlSemanticAnalyzer…                                                     |
+| UC-05  | Consultar valor em uma versão ou instante histórico          | 19          | RespCommandMapper, SqlPlanner, TemporalCommand, ExecutionPlan, CommandDispatcher, TemporalCommandHandler, CommandValidator, AccessController, StorageEngine, MvccStore…                            |
+| UC-06  | Inspecionar histórico e comparar versões                     | 17          | RespCommandMapper, SqlPlanner, TemporalCommand, ExecutionPlan, TemporalCommandHandler, StorageEngine, MvccStore, VersionChain, VersionedValue, RetentionPolicy…                                    |
+| UC-07  | Restaurar uma versão histórica                               | 25          | RespCommandMapper, SqlPlanner, TemporalCommand, CommandDispatcher, TemporalCommandHandler, AccessController, Session, StorageEngine, VersionChain, VersionedValue…                                 |
+| UC-08  | Executar transação com snapshot consistente                  | 21          | TransactionCommand, CommandDispatcher, TransactionCommandHandler, TransactionManager, SnapshotManager, TransactionContext, Session, KeyValueCommandHandler, TemporalCommandHandler, StorageEngine… |
+| UC-09  | Detectar e abortar conflito concorrente                      | 18          | Session, TransactionContext, SnapshotManager, TransactionManager, CommitCoordinator, VersionGenerator, CommitRecord, StorageEngine, TransactionCommand, TransactionCommandHandler…                 |
+| UC-10  | Expirar chave automaticamente preservando o evento histórico | 16          | ExpirationWorker, TtlIndex, StorageEngine, VersionChain, Mutation, CommitCoordinator, VersionGenerator, CommitRecord, WriteAheadLog, FsyncPolicy…                                                  |
+| UC-11  | Criar snapshot e compactar o WAL                             | 21          | SnapshotWriter, SnapshotManager, StorageEngine, MvccStore, StorageSnapshot, KeyIndex, VersionChain, VersionedValue, TtlIndex, SnapshotStore…                                                       |
+| UC-12  | Consultar saúde, métricas e informações administrativas      | 14          | RespCommandMapper, SqlPlanner, AdminCommand, Authenticator, AccessController, Session, CommandDispatcher, AdminCommandHandler, ServerHealthService, MetricsRegistry…                               |
+| UC-13  | Replicar commits para uma réplica e servir leitura read-only | 23          | ReplicationManager, ReplicaState, ServerConfiguration, ReplicaClient, PrimaryReplicationEndpoint, SyncCoordinator, SnapshotStore, WriteAheadLog, WalRecordCodec, ReplicaApplier…                   |
 
-Regra de consistência: todo caso de uso acima aparece em pelo menos uma etapa do plano; todas as classes citadas existem no diagrama conceitual.
+Regra de consistência: todas as classes citadas existem no diagrama conceitual.

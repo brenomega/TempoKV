@@ -68,7 +68,7 @@ public final class MvccStore implements StorageEngine {
         currentVersion = record.version();
     }
 
-    /** Exposes scheduled expirations to the E5 active-expiration worker. */
+    /** Exposes scheduled expirations to the active-expiration worker. */
     public TtlIndex ttlIndex() { return ttlIndex; }
 
     /** Captures an atomic retained-state view suitable for durable persistence. */

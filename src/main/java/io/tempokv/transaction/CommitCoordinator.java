@@ -18,7 +18,7 @@ public final class CommitCoordinator {
     private Consumer<CommitRecord> publisher = ignored -> { };
     private Throwable terminalFailure;
 
-    /** Creates an in-memory coordinator whose E5 WAL port is intentionally a no-op. */
+    /** Creates an in-memory coordinator whose WAL append action is intentionally a no-op. */
     public CommitCoordinator(VersionGenerator versions, StorageEngine storage, Clock clock) {
         this(versions, storage, clock, ignored -> { }, ignored -> { });
     }

@@ -1,131 +1,101 @@
+Se você quer ler a documentação em português acesse: [README-ptBR.md](README-ptBR.md).
+
 # TempoKV
 
-TempoKV is a durable temporal key-value server. Stages E1–E7 provide
-configuration and lifecycle management, a non-blocking RESP2 endpoint, current
-key-value commands, MVCC history, binary diffs, append-only restoration, and
-configurable history retention. E5 adds a segmented WAL, recovery, active
-expiration, validated snapshots, and conservative WAL compaction. E6 adds a
-JFlex/Java CUP SQL front end that compiles into the same commands and handlers
-used by RESP. E7 adds snapshot transactions with write-write conflict
-detection, command/prefix ACLs, sanitized tracing, latency percentiles, and
-operational `HEALTH`/`INFO` commands.
+TempoKV is a temporal key-value database that keeps immutable version history.
+It supports current reads, historical reads, comparisons, and restoration by
+creating a new commit instead of rewriting earlier history.
 
-## Requirements
+## The problem
 
-- JDK 25 for local Gradle builds.
-- Docker with Compose for the container workflow.
+Conventional key-value storage optimizes for the latest state. Operational
+systems may also need to answer what a value was at an earlier version or
+timestamp, what changed between two points, and how to restore an earlier value
+without losing the audit trail.
 
-## Build and verification
+## What TempoKV provides
+
+- immutable per-key history over an MVCC storage engine;
+- `GETAT`, `HISTORY`, `DIFF`, and append-only `RESTOREAT` operations;
+- RESP2 and a bounded SQL language over the same command and storage path;
+- session-scoped transactions with snapshot reads and write-write conflict
+  detection;
+- optional WAL persistence, validated snapshots, recovery, TTL expiration, and
+  conservative WAL compaction;
+- authenticated command/prefix ACLs and primary-to-replica replication.
+
+## Architecture at a glance
+
+RESP and SQL are protocol adapters. Both produce protocol-neutral commands that
+pass through authorization, validation, application handlers, the commit
+coordinator, and the MVCC storage engine. When persistence is enabled, commits
+reach the WAL before becoming visible; snapshots and WAL replay rebuild the
+retained state.
+
+See the [conceptual class diagram](docs/class-diagram.md) and
+[use cases](docs/use-cases.md) for the complete view.
+
+## Quick run
+
+TempoKV requires JDK 25. Build the executable JAR:
 
 ```bash
 ./gradlew clean build
-./gradlew test
-./gradlew integrationTest
 ```
 
-`check` runs unit tests, Lincheck, and every integration smoke test implemented
-through E7. The executable JAR is written to `build/libs/tempokv-0.1.0.jar`.
-Combined unit/integration coverage is written to
-`build/reports/jacoco/jacocoAllReport/html/index.html`.
-
-## Run locally
+Start a loopback-only node with authentication explicitly disabled:
 
 ```bash
-java -jar build/libs/tempokv-0.1.0.jar --data-dir=./data
+java -jar build/libs/tempokv-0.1.0.jar \
+  --data-dir=./data/quickstart \
+  --authentication-enabled=false
 ```
 
-The process accepts RESP clients on `--resp-port` (default `6379`) and textual
-SQL clients on `--sql-port` (default `6380`) until normal shutdown, when it
-closes network resources and releases the data-directory lock. Both endpoints
-bind all interfaces; use host firewall/container port publishing to limit
-exposure.
-
-## Run with Docker
+In another terminal:
 
 ```bash
-docker compose up --build
 redis-cli -p 6379 PING
-printf "SELECT value FROM tempokv WHERE key = 'profile';" | nc 127.0.0.1 6380
 ```
 
-Compose publishes RESP on `127.0.0.1:6379` and SQL on
-`127.0.0.1:6380`, enables persistence, and persists `/data` in a named volume.
-Stop the node with `Ctrl+C` or `docker compose down`.
-
-## Configuration
-
-Configuration precedence is command-line option, environment variable,
-optional UTF-8 `.properties` file, then default.
-
-| Option | Environment variable | Default |
-| --- | --- | --- |
-| `--resp-port` | `TEMPOKV_RESP_PORT` | `6379` |
-| `--sql-port` | `TEMPOKV_SQL_PORT` | `6380` |
-| `--data-dir` | `TEMPOKV_DATA_DIR` | `data` |
-| `--node-role` | `TEMPOKV_NODE_ROLE` | `PRIMARY` |
-| `--history-retention` | `TEMPOKV_HISTORY_RETENTION` | `PT720H` |
-| `--persistence-enabled` | `TEMPOKV_PERSISTENCE_ENABLED` | `false` |
-| `--authentication-enabled` | `TEMPOKV_AUTHENTICATION_ENABLED` | `false` |
-
-Use `--config=/path/to/tempokv.properties` or `TEMPOKV_CONFIG` to select the
-optional file. File keys use the `tempokv.*` names accepted by
-`ServerConfiguration`.
-
-## RESP commands through E7
-
-Current-state commands:
+Expected output:
 
 ```text
-PING
-SET key value
-GET key
-DEL key
-EXPIRE key seconds
-TTL key
+PONG
 ```
 
-Temporal commands:
+Continue with the [first-use tutorial](docs/getting-started.md) or go directly
+to the [command cookbook](docs/command-cookbook.md).
 
-```text
-GETAT key VERSION version
-GETAT key TIMESTAMP 2026-01-01T00:00:00Z
-HISTORY key [offset [limit]]
-DIFF key first-version second-version
-RESTOREAT key version
+## Demonstration
+
+<!-- TODO: add the demonstration GIF at docs/assets/demo.gif -->
+
+## Documentation
+
+- [First-use tutorial](docs/getting-started.md)
+- [Command cookbook](docs/command-cookbook.md)
+- [Use cases](docs/use-cases.md)
+- [Conceptual class diagram](docs/class-diagram.md)
+- [Performance, profiling, and benchmark results](docs/performance.md)
+- [Benchmark harness guide](benchmarks/README.md)
+
+## Build and tests
+
+```bash
+./gradlew check
 ```
 
-Transaction and operational commands:
+`check` runs unit tests, concurrency checks, integration tests, SQL
+lexer/parser generation, and combined JaCoCo reporting.
 
-```text
-BEGIN
-COMMIT
-ROLLBACK
-HEALTH
-INFO
-```
+## Project status
 
-The exact response shapes are documented in
-[the RESP protocol note](docs/04_Protocolo_RESP_Suportado.md).
+TempoKV is a finished technical project and reference implementation, not a
+claim of production readiness. Native TLS is not implemented: keep endpoints on
+loopback or a trusted private network, or place them behind a TLS-terminating
+proxy, tunnel, or service mesh. Non-loopback cleartext transport requires an
+explicit configuration opt-in.
 
-## SQL through E7
+## License
 
-Each SQL statement is terminated by `;`. The endpoint supports point
-`SELECT`, `UPSERT`, `DELETE`, `AS OF VERSION|TIMESTAMP`, projected and bounded
-`HISTORY`, `DIFF`, and append-only `RESTORE`. For example:
-
-```sql
-UPSERT INTO tempokv (key, value) VALUES ('profile', 'first');
-SELECT value FROM tempokv AS OF VERSION 1 WHERE key = 'profile';
-SELECT version, value FROM HISTORY('profile')
-ORDER BY version DESC LIMIT 10;
-RESTORE 'profile' TO VERSION 1;
-BEGIN;
-COMMIT;
-HEALTH;
-INFO;
-```
-
-The exact grammar and tabular response framing are documented in
-[the SQL language note](docs/06_Linguagem_SQL_Suportada.md).
-Transaction, ACL, and operational behavior is documented in
-[the stage 7 note](docs/07_Transacoes_Seguranca_e_Observabilidade.md).
+TempoKV is licensed under the [Apache License 2.0](LICENSE).

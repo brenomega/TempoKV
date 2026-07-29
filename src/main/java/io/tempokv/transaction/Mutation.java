@@ -21,7 +21,7 @@ public record Mutation(
         EXPIRED_TOMBSTONE
     }
 
-    /** Preserves the E3 constructor shape for ordinary mutations. */
+    /** Creates an ordinary mutation without restoration provenance. */
     public Mutation(String key, Type type, byte[] value, Instant expiresAt) {
         this(key, type, value, expiresAt, null);
     }

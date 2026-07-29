@@ -20,7 +20,7 @@ import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/** Covers E5's UC-08 prerequisite: a multi-mutation commit is durable as one version. */
+/** Verifies UC-08 durability: a multi-mutation commit is recovered as one version. */
 class Uc08DurableAtomicCommitSmokeTest {
     @TempDir Path directory;
     /** Replays every mutation from one commit record under the same recovered version. */

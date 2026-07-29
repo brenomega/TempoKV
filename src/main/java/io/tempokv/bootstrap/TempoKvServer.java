@@ -47,7 +47,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Orchestrates the E1 lifecycle, exclusive data-directory ownership, and observable health of one node.
+ * Orchestrates node lifecycle, exclusive data-directory ownership, and observable health.
  */
 public final class TempoKvServer implements AutoCloseable {
     private static final int DEFAULT_MAX_RETAINED_VERSIONS = 1_000;
@@ -384,7 +384,7 @@ public final class TempoKvServer implements AutoCloseable {
         return metrics.snapshot();
     }
 
-    /** Returns whether the E1 lifecycle currently owns its data-directory lock. */
+    /** Returns whether the running lifecycle currently owns its data-directory lock. */
     public synchronized boolean isRunning() {
         return started
                 && databaseLock.isHeld()

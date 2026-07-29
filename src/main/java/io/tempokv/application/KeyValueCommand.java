@@ -5,7 +5,7 @@ import java.util.Objects;
 
 /** Represents a current-state key-value operation independently from the RESP protocol. */
 public record KeyValueCommand(Kind kind, String key, byte[] value, long expirationSeconds) implements Command {
-    /** Lists the key-value commands supported by the E3 RESP surface. */
+    /** Lists the current-state key-value commands supported by the application. */
     public enum Kind { GET, SET, DEL, EXPIRE, TTL }
 
     /** Validates command-specific arguments and protects binary values from caller mutation. */

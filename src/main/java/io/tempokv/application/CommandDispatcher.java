@@ -11,7 +11,7 @@ public final class CommandDispatcher {
     private final List<CommandHandler<? extends Command>> handlers;
     private final CommandTracer tracer;
 
-    /** Creates a dispatcher with the handlers available in the current server stage. */
+    /** Creates a dispatcher with the handlers composed for the running server. */
     public CommandDispatcher(CommandValidator validator, List<CommandHandler<? extends Command>> handlers) {
         this(validator, handlers, null);
     }

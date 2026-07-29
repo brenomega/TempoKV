@@ -43,7 +43,7 @@ public final class TemporalCommandHandler implements CommandHandler<TemporalComm
         this(storage, commits, metrics, clock, garbageCollector, null, null);
     }
 
-    /** Creates the E7 handler with transactional restoration and snapshot-aware retention. */
+    /** Creates the handler with transactional restoration and snapshot-aware retention. */
     public TemporalCommandHandler(
             StorageEngine storage,
             CommitCoordinator commits,

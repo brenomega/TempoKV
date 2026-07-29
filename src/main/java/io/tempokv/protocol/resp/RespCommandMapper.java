@@ -65,7 +65,7 @@ public final class RespCommandMapper {
                 password));
     }
 
-    /** Maps supported RESP requests to E2 administrative or E3 key-value commands. */
+    /** Maps supported RESP requests to protocol-neutral application commands. */
     public Command map(RespFrame frame) throws CommandMappingException {
         if (!(frame instanceof RespFrame.Array(List<RespFrame> values)) || values.isEmpty() || !(values.getFirst() instanceof RespFrame.BulkString name)) {
             throw new CommandMappingException("ERR expected an array beginning with a bulk-string command");

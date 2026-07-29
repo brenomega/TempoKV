@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 
-/** Verifies the E4 temporal reads and append-only restoration semantics. */
+/** Verifies temporal reads and append-only restoration semantics. */
 class TemporalCommandHandlerTest {
     private static final Instant NOW = Instant.parse("2026-01-01T00:00:00Z");
 

@@ -11,7 +11,7 @@ import java.util.Objects;
  */
 public record TemporalCommand(Kind kind, String key, Selector selector, Selector otherSelector,
                               int offset, int limit) implements Command {
-    /** Lists the historical operations exposed during E4. */
+    /** Lists the historical operations exposed by the application. */
     public enum Kind { GETAT, HISTORY, DIFF, RESTOREAT }
 
     /** Identifies a historical point by commit version or commit timestamp. */

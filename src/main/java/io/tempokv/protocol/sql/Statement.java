@@ -5,7 +5,7 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * Defines the immutable SQL statements accepted by the E6 parser.
+ * Defines the immutable SQL statements accepted by the generated parser.
  *
  * <p>The AST records syntax only. Storage-specific restrictions are applied later by
  * {@link SqlSemanticAnalyzer}, keeping parsing errors distinct from semantic errors.</p>
@@ -83,7 +83,7 @@ public sealed interface Statement permits Statement.Select, Statement.Upsert, St
         }
     }
 
-    /** Represents transaction-control syntax reserved for the E7 transaction manager. */
+    /** Represents transaction-control syntax executed by the transaction manager. */
     record TransactionControl(Kind kind) implements Statement {
         /** Lists the transaction-control keywords recognized by the grammar. */
         public enum Kind { BEGIN, COMMIT, ROLLBACK }

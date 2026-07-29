@@ -16,7 +16,7 @@ public record VersionedValue(
     /** Identifies why a tombstone was committed for historical auditing. */
     public enum TombstoneReason { DELETED, EXPIRED, RESTORED }
 
-    /** Preserves the E4 constructor shape while deriving ordinary tombstone provenance. */
+    /** Creates a version while deriving ordinary tombstone provenance. */
     public VersionedValue(
             long version,
             byte[] value,
@@ -38,7 +38,7 @@ public record VersionedValue(
                         : null);
     }
 
-    /** Preserves the E3 constructor shape for versions without restoration provenance. */
+    /** Creates a version without restoration provenance. */
     public VersionedValue(
             long version, byte[] value, boolean tombstone, Instant committedAt, Instant expiresAt) {
         this(version, value, tombstone, committedAt, expiresAt, null);
