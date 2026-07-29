@@ -1,12 +1,14 @@
 # TempoKV
 
-TempoKV is a durable temporal key-value server. Stages E1–E6 provide
+TempoKV is a durable temporal key-value server. Stages E1–E7 provide
 configuration and lifecycle management, a non-blocking RESP2 endpoint, current
 key-value commands, MVCC history, binary diffs, append-only restoration, and
 configurable history retention. E5 adds a segmented WAL, recovery, active
 expiration, validated snapshots, and conservative WAL compaction. E6 adds a
 JFlex/Java CUP SQL front end that compiles into the same commands and handlers
-used by RESP.
+used by RESP. E7 adds snapshot transactions with write-write conflict
+detection, command/prefix ACLs, sanitized tracing, latency percentiles, and
+operational `HEALTH`/`INFO` commands.
 
 ## Requirements
 
@@ -21,8 +23,8 @@ used by RESP.
 ./gradlew integrationTest
 ```
 
-`check` runs unit tests and every integration smoke test implemented through
-E6. The executable JAR is written to `build/libs/tempokv-0.1.0.jar`.
+`check` runs unit tests, Lincheck, and every integration smoke test implemented
+through E7. The executable JAR is written to `build/libs/tempokv-0.1.0.jar`.
 Combined unit/integration coverage is written to
 `build/reports/jacoco/jacocoAllReport/html/index.html`.
 
@@ -69,7 +71,7 @@ Use `--config=/path/to/tempokv.properties` or `TEMPOKV_CONFIG` to select the
 optional file. File keys use the `tempokv.*` names accepted by
 `ServerConfiguration`.
 
-## RESP commands through E5
+## RESP commands through E7
 
 Current-state commands:
 
@@ -92,10 +94,20 @@ DIFF key first-version second-version
 RESTOREAT key version
 ```
 
+Transaction and operational commands:
+
+```text
+BEGIN
+COMMIT
+ROLLBACK
+HEALTH
+INFO
+```
+
 The exact response shapes are documented in
 [the RESP protocol note](docs/04_Protocolo_RESP_Suportado.md).
 
-## SQL through E6
+## SQL through E7
 
 Each SQL statement is terminated by `;`. The endpoint supports point
 `SELECT`, `UPSERT`, `DELETE`, `AS OF VERSION|TIMESTAMP`, projected and bounded
@@ -107,7 +119,13 @@ SELECT value FROM tempokv AS OF VERSION 1 WHERE key = 'profile';
 SELECT version, value FROM HISTORY('profile')
 ORDER BY version DESC LIMIT 10;
 RESTORE 'profile' TO VERSION 1;
+BEGIN;
+COMMIT;
+HEALTH;
+INFO;
 ```
 
 The exact grammar and tabular response framing are documented in
 [the SQL language note](docs/06_Linguagem_SQL_Suportada.md).
+Transaction, ACL, and operational behavior is documented in
+[the stage 7 note](docs/07_Transacoes_Seguranca_e_Observabilidade.md).

@@ -26,6 +26,19 @@ public final class CommandValidator {
                 }
             }
             case TemporalCommand temporal -> validateKey(temporal.key());
+            case TransactionCommand transaction -> validateTransactionState(
+                    transaction, session);
+        }
+    }
+
+    private static void validateTransactionState(
+            TransactionCommand command, Session session) {
+        boolean active = session.transaction().isPresent();
+        if (command.kind() == TransactionCommand.Kind.BEGIN && active) {
+            throw new IllegalArgumentException("ERR transaction already active");
+        }
+        if (command.kind() != TransactionCommand.Kind.BEGIN && !active) {
+            throw new IllegalArgumentException("ERR no active transaction");
         }
     }
 

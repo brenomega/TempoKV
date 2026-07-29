@@ -1,11 +1,11 @@
 package io.tempokv.application;
 
 /**
- * Contains operational commands that do not access key-value storage in this stage.
+ * Contains operational commands that do not access user key-value contents.
  */
 public record AdminCommand(Kind kind) implements Command {
-    /** Supported administrative operations for the RESP endpoint. */
-    public enum Kind { PING }
+    /** Supported administrative operations shared by RESP and SQL. */
+    public enum Kind { PING, HEALTH, INFO }
 
     /** Rejects an administrative command without a concrete operation. */
     public AdminCommand {

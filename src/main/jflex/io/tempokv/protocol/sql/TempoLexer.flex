@@ -71,6 +71,9 @@ LineComment = "--"[^\r\n]*
 "BEGIN"            { return symbol(SqlSymbols.BEGIN); }
 "COMMIT"           { return symbol(SqlSymbols.COMMIT); }
 "ROLLBACK"         { return symbol(SqlSymbols.ROLLBACK); }
+"PING"             { return symbol(SqlSymbols.PING); }
+"HEALTH"           { return symbol(SqlSymbols.HEALTH); }
+"INFO"             { return symbol(SqlSymbols.INFO); }
 "VERSION"          { return symbol(SqlSymbols.VERSION); }
 "TIMESTAMP"        { return symbol(SqlSymbols.TIMESTAMP); }
 "KEY"              { return symbol(SqlSymbols.KEY); }

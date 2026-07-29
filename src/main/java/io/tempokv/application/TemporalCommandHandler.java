@@ -8,6 +8,8 @@ import io.tempokv.storage.StorageEngine;
 import io.tempokv.storage.VersionedValue;
 import io.tempokv.transaction.CommitCoordinator;
 import io.tempokv.transaction.Mutation;
+import io.tempokv.transaction.SnapshotManager;
+import io.tempokv.transaction.TransactionManager;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Arrays;
@@ -22,11 +24,13 @@ public final class TemporalCommandHandler implements CommandHandler<TemporalComm
     private final MetricsRegistry metrics;
     private final Clock clock;
     private final HistoryGarbageCollector garbageCollector;
+    private final TransactionManager transactions;
+    private final SnapshotManager snapshots;
 
     /** Creates a handler without automatic retention, suitable for focused unit callers. */
     public TemporalCommandHandler(
             StorageEngine storage, CommitCoordinator commits, MetricsRegistry metrics) {
-        this(storage, commits, metrics, Clock.systemUTC(), null);
+        this(storage, commits, metrics, Clock.systemUTC(), null, null, null);
     }
 
     /** Creates the production handler with explicit clock and retention collector. */
@@ -36,11 +40,25 @@ public final class TemporalCommandHandler implements CommandHandler<TemporalComm
             MetricsRegistry metrics,
             Clock clock,
             HistoryGarbageCollector garbageCollector) {
+        this(storage, commits, metrics, clock, garbageCollector, null, null);
+    }
+
+    /** Creates the E7 handler with transactional restoration and snapshot-aware retention. */
+    public TemporalCommandHandler(
+            StorageEngine storage,
+            CommitCoordinator commits,
+            MetricsRegistry metrics,
+            Clock clock,
+            HistoryGarbageCollector garbageCollector,
+            TransactionManager transactions,
+            SnapshotManager snapshots) {
         this.storage = Objects.requireNonNull(storage, "storage");
         this.commits = Objects.requireNonNull(commits, "commits");
         this.metrics = Objects.requireNonNull(metrics, "metrics");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.garbageCollector = garbageCollector;
+        this.transactions = transactions;
+        this.snapshots = snapshots;
         if (garbageCollector != null && !(storage instanceof MvccStore)) {
             throw new IllegalArgumentException("History collection requires MvccStore");
         }
@@ -56,7 +74,7 @@ public final class TemporalCommandHandler implements CommandHandler<TemporalComm
             case GETAT -> getAt(command);
             case HISTORY -> history(command);
             case DIFF -> diff(command);
-            case RESTOREAT -> restore(command);
+            case RESTOREAT -> restore(command, session);
         };
     }
 
@@ -104,7 +122,8 @@ public final class TemporalCommandHandler implements CommandHandler<TemporalComm
                 suffix(after.value(), commonPrefix)));
     }
 
-    private CommandResult restore(TemporalCommand command) {
+    private CommandResult restore(
+            TemporalCommand command, Session session) {
         StorageEngine.HistoricalValue source = lookup(command.key(), command.selector());
         if (source.status() != StorageEngine.HistoricalValue.Status.FOUND) {
             return valueResult(source, command.selector());
@@ -114,15 +133,21 @@ public final class TemporalCommandHandler implements CommandHandler<TemporalComm
                 ? Mutation.restoreTombstone(command.key(), value.version())
                 : Mutation.restorePut(
                         command.key(), value.value(), value.expiresAt(), value.version());
-        var record = commits.commit(List.of(restoration));
         metrics.incrementCounter("commands.restoreat");
+        if (transactions != null && session.transaction().isPresent()) {
+            transactions.stage(session, restoration);
+            return CommandResult.simpleString("QUEUED");
+        }
+        var record = commits.commit(List.of(restoration));
         return new CommandResult.IntegerValue(record.version());
     }
 
     private void collectRetainedHistory() {
         if (garbageCollector == null) return;
         int removed = garbageCollector.collect(
-                (MvccStore) storage, Instant.now(clock), 0);
+                (MvccStore) storage,
+                Instant.now(clock),
+                snapshots == null ? 0 : snapshots.oldestActiveVersion());
         metrics.addCounter("history.versions_collected", removed);
         metrics.setGauge("history.last_collection_removed", removed);
     }

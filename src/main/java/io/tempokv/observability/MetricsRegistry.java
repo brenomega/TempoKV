@@ -7,12 +7,14 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.Arrays;
 
 /**
  * Collects bounded, thread-safe counters, gauges, and latency aggregates without business decisions.
  */
 public final class MetricsRegistry {
     private static final int MAX_METRIC_NAME_LENGTH = 128;
+    private static final int LATENCY_SAMPLE_CAPACITY = 2_048;
 
     private final ConcurrentHashMap<String, LongAdder> counters = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicLong> gauges = new ConcurrentHashMap<>();
@@ -73,23 +75,40 @@ public final class MetricsRegistry {
         private final LongAdder totalNanos = new LongAdder();
         private final AtomicLong minNanos = new AtomicLong(Long.MAX_VALUE);
         private final AtomicLong maxNanos = new AtomicLong();
+        private final long[] samples = new long[LATENCY_SAMPLE_CAPACITY];
+        private int nextSample;
+        private int sampleCount;
 
         /** Adds one latency value to the aggregate. */
-        void record(long nanos) {
+        synchronized void record(long nanos) {
             count.increment();
             totalNanos.add(nanos);
             minNanos.accumulateAndGet(nanos, Math::min);
             maxNanos.accumulateAndGet(nanos, Math::max);
+            samples[nextSample] = nanos;
+            nextSample = (nextSample + 1) % samples.length;
+            sampleCount = Math.min(sampleCount + 1, samples.length);
         }
 
         /** Builds an immutable view of the aggregate. */
-        LatencySnapshot snapshot() {
+        synchronized LatencySnapshot snapshot() {
             long observations = count.sum();
+            long[] ordered = Arrays.copyOf(samples, sampleCount);
+            Arrays.sort(ordered);
             return new LatencySnapshot(
                     observations,
                     totalNanos.sum(),
                     observations == 0 ? 0L : minNanos.get(),
-                    maxNanos.get());
+                    maxNanos.get(),
+                    percentile(ordered, 0.50d),
+                    percentile(ordered, 0.95d),
+                    percentile(ordered, 0.99d));
+        }
+
+        private static long percentile(long[] ordered, double quantile) {
+            if (ordered.length == 0) return 0L;
+            int index = (int) Math.ceil(quantile * ordered.length) - 1;
+            return ordered[Math.max(0, Math.min(index, ordered.length - 1))];
         }
     }
 }

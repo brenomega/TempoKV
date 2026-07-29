@@ -2,6 +2,8 @@ package io.tempokv.protocol.sql;
 
 import io.tempokv.application.KeyValueCommand;
 import io.tempokv.application.TemporalCommand;
+import io.tempokv.application.AdminCommand;
+import io.tempokv.application.TransactionCommand;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 
@@ -32,9 +34,13 @@ public final class SqlPlanner {
                             restore.key().value(),
                             restore.version()),
                     ExecutionPlan.Mutation.Kind.RESTORE);
-            case Statement.TransactionControl ignored -> throw new SqlException(
-                    SqlException.Kind.PLANNING,
-                    "transaction control has no E6 execution plan");
+            case Statement.TransactionControl transaction ->
+                    new ExecutionPlan.Transaction(new TransactionCommand(
+                            TransactionCommand.Kind.valueOf(
+                                    transaction.kind().name())));
+            case Statement.Admin admin -> new ExecutionPlan.Admin(
+                    new AdminCommand(AdminCommand.Kind.valueOf(
+                            admin.kind().name())));
         };
     }
 

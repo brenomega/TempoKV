@@ -1,17 +1,43 @@
 services:
-  tempokv:
+  primary:
     build:
       context: .
     image: tempokv:local
     environment:
       TEMPOKV_DATA_DIR: /data
       TEMPOKV_PERSISTENCE_ENABLED: "true"
+      TEMPOKV_NODE_ROLE: PRIMARY
+      TEMPOKV_NODE_ID: primary
+      TEMPOKV_REPLICATION_PORT: "6381"
+      TEMPOKV_REPLICATION_TOKEN: tempokv-compose
     ports:
       - "127.0.0.1:6379:6379"
       - "127.0.0.1:6380:6380"
     volumes:
-      - tempokv-data:/data
+      - tempokv-primary-data:/data
+    stop_grace_period: 15s
+
+  replica:
+    image: tempokv:local
+    depends_on:
+      - primary
+    environment:
+      TEMPOKV_DATA_DIR: /data
+      TEMPOKV_PERSISTENCE_ENABLED: "true"
+      TEMPOKV_NODE_ROLE: REPLICA
+      TEMPOKV_NODE_ID: replica
+      TEMPOKV_PRIMARY_HOST: primary
+      TEMPOKV_PRIMARY_REPLICATION_PORT: "6381"
+      TEMPOKV_REPLICATION_PORT: "6381"
+      TEMPOKV_REPLICATION_TOKEN: tempokv-compose
+    ports:
+      - "127.0.0.1:7379:6379"
+      - "127.0.0.1:7380:6380"
+    volumes:
+      - tempokv-replica-data:/data
+    restart: on-failure
     stop_grace_period: 15s
 
 volumes:
-  tempokv-data:
+  tempokv-primary-data:
+  tempokv-replica-data:

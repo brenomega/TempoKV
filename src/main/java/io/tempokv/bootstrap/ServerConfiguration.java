@@ -20,13 +20,19 @@ import java.util.Set;
 public record ServerConfiguration(
         int respPort,
         int sqlPort,
+        int replicationPort,
         Path dataDirectory,
         NodeRole nodeRole,
+        String nodeId,
+        String primaryHost,
+        int primaryReplicationPort,
+        String replicationToken,
         Duration historyRetention,
         boolean persistenceEnabled,
         boolean authenticationEnabled) {
     private static final int DEFAULT_RESP_PORT = 6379;
     private static final int DEFAULT_SQL_PORT = 6380;
+    private static final int DEFAULT_REPLICATION_PORT = 6381;
     private static final Path DEFAULT_DATA_DIRECTORY = Path.of("data");
     private static final Duration DEFAULT_HISTORY_RETENTION = Duration.ofDays(30);
     private static final long MAX_CONFIGURATION_FILE_BYTES = 1_048_576L;
@@ -34,8 +40,13 @@ public record ServerConfiguration(
     private static final Set<String> FILE_KEYS = Set.of(
             "tempokv.resp.port",
             "tempokv.sql.port",
+            "tempokv.replication.port",
             "tempokv.data.dir",
             "tempokv.node.role",
+            "tempokv.node.id",
+            "tempokv.primary.host",
+            "tempokv.primary.replication.port",
+            "tempokv.replication.token",
             "tempokv.history.retention",
             "tempokv.persistence.enabled",
             "tempokv.security.authentication.enabled");
@@ -44,15 +55,45 @@ public record ServerConfiguration(
     public ServerConfiguration {
         validatePort(respPort, "respPort");
         validatePort(sqlPort, "sqlPort");
-        if (respPort == sqlPort) {
-            throw new ConfigurationException("RESP and SQL ports must be different");
+        validatePort(replicationPort, "replicationPort");
+        validatePort(primaryReplicationPort, "primaryReplicationPort");
+        if (respPort == sqlPort || respPort == replicationPort
+                || sqlPort == replicationPort) {
+            throw new ConfigurationException("RESP, SQL and replication ports must be different");
         }
         dataDirectory = normalizeDirectory(dataDirectory);
         nodeRole = Objects.requireNonNull(nodeRole, "nodeRole");
+        nodeId = requireText(nodeId, "nodeId");
+        primaryHost = requireText(primaryHost, "primaryHost");
+        replicationToken = requireText(replicationToken, "replicationToken");
         historyRetention = Objects.requireNonNull(historyRetention, "historyRetention");
         if (historyRetention.isZero() || historyRetention.isNegative()) {
             throw new ConfigurationException("History retention must be positive");
         }
+    }
+
+    /** Preserves the E7 constructor shape with local replication defaults. */
+    public ServerConfiguration(
+            int respPort,
+            int sqlPort,
+            Path dataDirectory,
+            NodeRole nodeRole,
+            Duration historyRetention,
+            boolean persistenceEnabled,
+            boolean authenticationEnabled) {
+        this(
+                respPort,
+                sqlPort,
+                DEFAULT_REPLICATION_PORT,
+                dataDirectory,
+                nodeRole,
+                "tempokv-node",
+                "127.0.0.1",
+                DEFAULT_REPLICATION_PORT,
+                "tempokv-local",
+                historyRetention,
+                persistenceEnabled,
+                authenticationEnabled);
     }
 
     /** Loads configuration using CLI, environment, file, and default precedence. */
@@ -72,8 +113,15 @@ public record ServerConfiguration(
         return new ServerConfiguration(
                 parsePort(values.get("resp-port"), "resp-port"),
                 parsePort(values.get("sql-port"), "sql-port"),
+                parsePort(values.get("replication-port"), "replication-port"),
                 Path.of(values.get("data-dir")),
                 parseNodeRole(values.get("node-role")),
+                values.get("node-id"),
+                values.get("primary-host"),
+                parsePort(
+                        values.get("primary-replication-port"),
+                        "primary-replication-port"),
+                values.get("replication-token"),
                 parseDuration(values.get("history-retention"), "history-retention"),
                 parseBoolean(values.get("persistence-enabled"), "persistence-enabled"),
                 parseBoolean(values.get("authentication-enabled"), "authentication-enabled"));
@@ -86,14 +134,19 @@ public record ServerConfiguration(
 
     /** Returns the lowest-precedence configuration values. */
     private static Map<String, String> defaultValues() {
-        return Map.of(
-                "resp-port", Integer.toString(DEFAULT_RESP_PORT),
-                "sql-port", Integer.toString(DEFAULT_SQL_PORT),
-                "data-dir", DEFAULT_DATA_DIRECTORY.toString(),
-                "node-role", NodeRole.PRIMARY.name(),
-                "history-retention", DEFAULT_HISTORY_RETENTION.toString(),
-                "persistence-enabled", "false",
-                "authentication-enabled", "false");
+        return Map.ofEntries(
+                Map.entry("resp-port", Integer.toString(DEFAULT_RESP_PORT)),
+                Map.entry("sql-port", Integer.toString(DEFAULT_SQL_PORT)),
+                Map.entry("replication-port", Integer.toString(DEFAULT_REPLICATION_PORT)),
+                Map.entry("data-dir", DEFAULT_DATA_DIRECTORY.toString()),
+                Map.entry("node-role", NodeRole.PRIMARY.name()),
+                Map.entry("node-id", "tempokv-node"),
+                Map.entry("primary-host", "127.0.0.1"),
+                Map.entry("primary-replication-port", Integer.toString(DEFAULT_REPLICATION_PORT)),
+                Map.entry("replication-token", "tempokv-local"),
+                Map.entry("history-retention", DEFAULT_HISTORY_RETENTION.toString()),
+                Map.entry("persistence-enabled", "false"),
+                Map.entry("authentication-enabled", "false"));
     }
 
     /** Parses strict long-form command-line options. */
@@ -154,8 +207,13 @@ public record ServerConfiguration(
     private static void applyFile(Map<String, String> values, Map<String, String> file) {
         copyIfPresent(file, "tempokv.resp.port", values, "resp-port");
         copyIfPresent(file, "tempokv.sql.port", values, "sql-port");
+        copyIfPresent(file, "tempokv.replication.port", values, "replication-port");
         copyIfPresent(file, "tempokv.data.dir", values, "data-dir");
         copyIfPresent(file, "tempokv.node.role", values, "node-role");
+        copyIfPresent(file, "tempokv.node.id", values, "node-id");
+        copyIfPresent(file, "tempokv.primary.host", values, "primary-host");
+        copyIfPresent(file, "tempokv.primary.replication.port", values, "primary-replication-port");
+        copyIfPresent(file, "tempokv.replication.token", values, "replication-token");
         copyIfPresent(file, "tempokv.history.retention", values, "history-retention");
         copyIfPresent(file, "tempokv.persistence.enabled", values, "persistence-enabled");
         copyIfPresent(file, "tempokv.security.authentication.enabled", values, "authentication-enabled");
@@ -165,8 +223,13 @@ public record ServerConfiguration(
     private static void applyEnvironment(Map<String, String> values, Map<String, String> environment) {
         copyIfPresent(environment, "TEMPOKV_RESP_PORT", values, "resp-port");
         copyIfPresent(environment, "TEMPOKV_SQL_PORT", values, "sql-port");
+        copyIfPresent(environment, "TEMPOKV_REPLICATION_PORT", values, "replication-port");
         copyIfPresent(environment, "TEMPOKV_DATA_DIR", values, "data-dir");
         copyIfPresent(environment, "TEMPOKV_NODE_ROLE", values, "node-role");
+        copyIfPresent(environment, "TEMPOKV_NODE_ID", values, "node-id");
+        copyIfPresent(environment, "TEMPOKV_PRIMARY_HOST", values, "primary-host");
+        copyIfPresent(environment, "TEMPOKV_PRIMARY_REPLICATION_PORT", values, "primary-replication-port");
+        copyIfPresent(environment, "TEMPOKV_REPLICATION_TOKEN", values, "replication-token");
         copyIfPresent(environment, "TEMPOKV_HISTORY_RETENTION", values, "history-retention");
         copyIfPresent(environment, "TEMPOKV_PERSISTENCE_ENABLED", values, "persistence-enabled");
         copyIfPresent(environment, "TEMPOKV_AUTHENTICATION_ENABLED", values, "authentication-enabled");
@@ -239,6 +302,14 @@ public record ServerConfiguration(
     /** Converts the optional configuration file into a stable absolute path. */
     private static Path normalizeFile(Path path) {
         return Objects.requireNonNull(path, "config path").toAbsolutePath().normalize();
+    }
+
+    private static String requireText(String value, String field) {
+        String normalized = Objects.requireNonNull(value, field).trim();
+        if (normalized.isEmpty()) {
+            throw new ConfigurationException(field + " must not be blank");
+        }
+        return normalized;
     }
 
     /** Identifies the future replication role configured for this node. */

@@ -2,6 +2,8 @@ package io.tempokv.protocol.sql;
 
 import io.tempokv.application.Command;
 import io.tempokv.application.TemporalCommand;
+import io.tempokv.application.AdminCommand;
+import io.tempokv.application.TransactionCommand;
 import java.util.List;
 import java.util.Objects;
 
@@ -9,7 +11,8 @@ import java.util.Objects;
  * Defines bounded logical SQL operations whose terminal work is an existing application command.
  */
 public sealed interface ExecutionPlan permits ExecutionPlan.PointLookup,
-        ExecutionPlan.HistoryLookup, ExecutionPlan.Diff, ExecutionPlan.Mutation {
+        ExecutionPlan.HistoryLookup, ExecutionPlan.Diff, ExecutionPlan.Mutation,
+        ExecutionPlan.Transaction, ExecutionPlan.Admin {
 
     /** Reads one current or historical key and projects the returned row. */
     record PointLookup(Command command, String key, List<String> columns)
@@ -51,6 +54,22 @@ public sealed interface ExecutionPlan permits ExecutionPlan.PointLookup,
         public Mutation {
             command = Objects.requireNonNull(command, "command");
             kind = Objects.requireNonNull(kind, "kind");
+        }
+    }
+
+    /** Executes one shared transaction lifecycle command. */
+    record Transaction(TransactionCommand command) implements ExecutionPlan {
+        /** Requires a transaction command. */
+        public Transaction {
+            command = Objects.requireNonNull(command, "command");
+        }
+    }
+
+    /** Executes one shared administrative command and returns a tabular result. */
+    record Admin(AdminCommand command) implements ExecutionPlan {
+        /** Requires an administrative command. */
+        public Admin {
+            command = Objects.requireNonNull(command, "command");
         }
     }
 }

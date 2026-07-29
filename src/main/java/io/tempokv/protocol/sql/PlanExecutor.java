@@ -44,12 +44,18 @@ public final class PlanExecutor {
             case ExecutionPlan.Mutation mutation -> mutation(
                     mutation,
                     dispatch(mutation.command(), session));
+            case ExecutionPlan.Transaction transaction -> status(
+                    dispatch(transaction.command(), session),
+                    "transaction");
+            case ExecutionPlan.Admin admin -> admin(
+                    admin,
+                    dispatch(admin.command(), session));
         };
     }
 
     private CommandResult dispatch(Command command, Session session) {
         if (!accessController.isAllowed(session, command)) {
-            throw execution("command is not permitted");
+            throw execution(accessController.denialMessage(session, command));
         }
         CommandResult result = dispatcher.dispatch(command, session);
         if (result instanceof CommandResult.Error error) {
@@ -127,9 +133,42 @@ public final class PlanExecutor {
                     List.of("affected"),
                     requireInteger(result, "DELETE").value());
             case RESTORE -> SqlResult.row(
-                    List.of("version"),
-                    requireInteger(result, "RESTORE").value());
+                    result instanceof CommandResult.SimpleString queued
+                            ? List.of("status")
+                            : List.of("version"),
+                    result instanceof CommandResult.SimpleString queued
+                            ? queued.value()
+                            : requireInteger(result, "RESTORE").value());
         };
+    }
+
+    private static SqlResult status(
+            CommandResult result, String operation) {
+        return SqlResult.row(
+                List.of("status"),
+                requireSimple(result, operation).value());
+    }
+
+    private static SqlResult admin(
+            ExecutionPlan.Admin plan, CommandResult result) {
+        if (plan.command().kind()
+                == io.tempokv.application.AdminCommand.Kind.PING) {
+            return status(result, "PING");
+        }
+        CommandResult.Array rows = requireArray(result, plan.command().name());
+        List<List<Object>> values = rows.values().stream()
+                .map(entry -> {
+                    CommandResult.Array pair = requireArray(
+                            entry, plan.command().name() + " entry");
+                    if (pair.values().size() != 2) {
+                        throw execution("invalid administrative result shape");
+                    }
+                    return List.<Object>of(
+                            requireSimple(pair.values().get(0), "admin key").value(),
+                            requireSimple(pair.values().get(1), "admin value").value());
+                })
+                .toList();
+        return new SqlResult(List.of("name", "value"), values);
     }
 
     private static HistoryRow historyRow(CommandResult result) {

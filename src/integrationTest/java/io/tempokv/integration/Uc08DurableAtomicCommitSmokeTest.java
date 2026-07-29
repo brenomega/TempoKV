@@ -31,4 +31,28 @@ class Uc08DurableAtomicCommitSmokeTest {
         MvccStore recovered = new MvccStore(); new RecoveryManager(new SnapshotStore(directory, files), wal).recover(recovered, new VersionGenerator());
         assertArrayEquals("L".getBytes(StandardCharsets.UTF_8), recovered.get("left", Instant.EPOCH).orElseThrow().value()); assertEquals(1, recovered.history("right").getFirst().version());
     }
+
+    /** Commits two SQL writes as one version while making staged values visible to their session. */
+    @Test
+    void executesPublicSnapshotTransactionAsOneAtomicCommit() throws Exception {
+        try (Uc05HistoricalReadSmokeTest.ServerFixture fixture =
+                        Uc05HistoricalReadSmokeTest.ServerFixture.start(
+                                directory.resolve("public"));
+                SqlTestClient sql = SqlTestClient.connect(fixture.server())) {
+            sql.send(
+                    "BEGIN;"
+                            + "UPSERT INTO tempokv (key, value) VALUES ('left', 'L');"
+                            + "UPSERT INTO tempokv (key, value) VALUES ('right', 'R');"
+                            + "SELECT value FROM tempokv WHERE key = 'left';"
+                            + "COMMIT;"
+                            + "SELECT version FROM HISTORY('right') LIMIT 1;");
+
+            assertEquals("status\nOK\n\n", sql.readResponse());
+            assertEquals("status\nOK\n\n", sql.readResponse());
+            assertEquals("status\nOK\n\n", sql.readResponse());
+            assertEquals("value\nL\n\n", sql.readResponse());
+            assertEquals("status\nOK\n\n", sql.readResponse());
+            assertEquals("version\n1\n\n", sql.readResponse());
+        }
+    }
 }

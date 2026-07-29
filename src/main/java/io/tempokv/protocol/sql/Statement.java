@@ -11,7 +11,8 @@ import java.util.Objects;
  * {@link SqlSemanticAnalyzer}, keeping parsing errors distinct from semantic errors.</p>
  */
 public sealed interface Statement permits Statement.Select, Statement.Upsert, Statement.Delete,
-        Statement.History, Statement.Diff, Statement.Restore, Statement.TransactionControl {
+        Statement.History, Statement.Diff, Statement.Restore, Statement.TransactionControl,
+        Statement.Admin {
 
     /** Reads one key at the current head or at an optional historical point. */
     record Select(List<Expression.Column> columns, String table,
@@ -89,6 +90,17 @@ public sealed interface Statement permits Statement.Select, Statement.Upsert, St
 
         /** Requires a transaction-control kind. */
         public TransactionControl {
+            kind = Objects.requireNonNull(kind, "kind");
+        }
+    }
+
+    /** Represents a bounded administrative statement that never reads user key values. */
+    record Admin(Kind kind) implements Statement {
+        /** Lists administrative statements accepted by the SQL endpoint. */
+        public enum Kind { PING, HEALTH, INFO }
+
+        /** Requires a concrete administrative operation. */
+        public Admin {
             kind = Objects.requireNonNull(kind, "kind");
         }
     }

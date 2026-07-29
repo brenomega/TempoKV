@@ -6,6 +6,8 @@ import io.tempokv.application.CommandHandler;
 import io.tempokv.application.CommandValidator;
 import io.tempokv.application.KeyValueCommandHandler;
 import io.tempokv.application.TemporalCommandHandler;
+import io.tempokv.application.TransactionCommandHandler;
+import io.tempokv.observability.CommandTracer;
 import io.tempokv.observability.HealthStatus;
 import io.tempokv.observability.MetricsRegistry;
 import io.tempokv.observability.MetricsSnapshot;
@@ -20,14 +22,20 @@ import io.tempokv.persistence.SnapshotStore;
 import io.tempokv.persistence.SnapshotWriter;
 import io.tempokv.persistence.WalCompactor;
 import io.tempokv.persistence.WriteAheadLog;
+import io.tempokv.replication.ReplicationManager;
 import io.tempokv.server.RespServer;
 import io.tempokv.server.SqlServer;
+import io.tempokv.security.AccessController;
+import io.tempokv.security.Authenticator;
 import io.tempokv.storage.HistoryGarbageCollector;
 import io.tempokv.storage.MvccStore;
 import io.tempokv.storage.ExpirationWorker;
 import io.tempokv.storage.RetentionPolicy;
 import io.tempokv.transaction.CommitCoordinator;
 import io.tempokv.transaction.VersionGenerator;
+import io.tempokv.transaction.ConflictDetector;
+import io.tempokv.transaction.SnapshotManager;
+import io.tempokv.transaction.TransactionManager;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -50,6 +58,7 @@ public final class TempoKvServer implements AutoCloseable {
     private final CommandDispatcher dispatcher;
     private final MvccStore storage;
     private final VersionGenerator versions;
+    private final CommitCoordinator commits;
     private final WriteAheadLog writeAheadLog;
     private final RecoveryManager recoveryManager;
     private final ExpirationWorker expirationWorker;
@@ -57,6 +66,11 @@ public final class TempoKvServer implements AutoCloseable {
     private final SnapshotWriter snapshotWriter;
     private final WalCompactor walCompactor;
     private final HistoryGarbageCollector garbageCollector;
+    private final SnapshotManager snapshotManager;
+    private final TransactionManager transactionManager;
+    private final Authenticator authenticator;
+    private final AccessController accessController;
+    private final ReplicationManager replicationManager;
     private final Clock clock;
     private RespServer respServer;
     private SqlServer sqlServer;
@@ -68,10 +82,36 @@ public final class TempoKvServer implements AutoCloseable {
             DatabaseLock databaseLock,
             MetricsRegistry metrics,
             ServerHealthService healthService) {
+        this(
+                configuration,
+                databaseLock,
+                metrics,
+                healthService,
+                configuration.authenticationEnabled()
+                        ? session -> { }
+                        : Authenticator.permissive(),
+                defaultAccessController(configuration));
+    }
+
+    /**
+     * Creates a server with explicit identity resolution and ACL dependencies.
+     *
+     * <p>This constructor is the composition point for deployments that enable credential
+     * authentication or provide transport-derived identities.</p>
+     */
+    public TempoKvServer(
+            ServerConfiguration configuration,
+            DatabaseLock databaseLock,
+            MetricsRegistry metrics,
+            ServerHealthService healthService,
+            Authenticator authenticator,
+            AccessController accessController) {
         this.configuration = Objects.requireNonNull(configuration, "configuration");
         this.databaseLock = Objects.requireNonNull(databaseLock, "databaseLock");
         this.metrics = Objects.requireNonNull(metrics, "metrics");
         this.healthService = Objects.requireNonNull(healthService, "healthService");
+        this.authenticator = Objects.requireNonNull(authenticator, "authenticator");
+        this.accessController = Objects.requireNonNull(accessController, "accessController");
         this.clock = Clock.systemUTC();
         this.storage = new MvccStore();
         this.versions = new VersionGenerator();
@@ -91,13 +131,23 @@ public final class TempoKvServer implements AutoCloseable {
             this.snapshotWriter = null;
             this.walCompactor = null;
         }
-        CommitCoordinator commits = new CommitCoordinator(
+        this.commits = new CommitCoordinator(
                 versions,
                 storage,
                 clock,
                 record -> {
                     if (writeAheadLog != null) writeAheadLog.append(record);
                 });
+        this.replicationManager = new ReplicationManager(
+                configuration,
+                storage,
+                versions,
+                writeAheadLog,
+                snapshotStore,
+                commits,
+                metrics,
+                healthService);
+        commits.setCommitPublisher(replicationManager::publish);
         this.expirationWorker = new ExpirationWorker(storage, commits, clock, failure -> {
             metrics.incrementCounter("expiration.failures");
             healthService.markDegraded("Active expiration failed");
@@ -108,18 +158,61 @@ public final class TempoKvServer implements AutoCloseable {
                         configuration.historyRetention()),
                 Map.of());
         this.garbageCollector = new HistoryGarbageCollector(retention);
+        this.snapshotManager = new SnapshotManager(commits::currentVersion);
+        this.transactionManager = new TransactionManager(
+                storage,
+                commits,
+                snapshotManager,
+                new ConflictDetector(storage),
+                metrics);
         this.dispatcher = new CommandDispatcher(
                 new CommandValidator(),
                 List.<CommandHandler<? extends io.tempokv.application.Command>>of(
-                        new AdminCommandHandler(metrics),
+                        new AdminCommandHandler(
+                                metrics,
+                                healthService,
+                                configuration.nodeRole().name(),
+                                versions::currentVersion,
+                                replicationManager::operationalInfo),
+                        new TransactionCommandHandler(
+                                transactionManager, metrics),
                         new KeyValueCommandHandler(
-                                storage, commits, clock, metrics),
+                                storage,
+                                commits,
+                                clock,
+                                metrics,
+                                transactionManager),
                         new TemporalCommandHandler(
                                 storage,
                                 commits,
                                 metrics,
                                 clock,
-                                garbageCollector)));
+                                garbageCollector,
+                                transactionManager,
+                                snapshotManager)),
+                new CommandTracer(metrics));
+    }
+
+    private static AccessController defaultAccessController(
+            ServerConfiguration configuration) {
+        Objects.requireNonNull(configuration, "configuration");
+        java.util.Set<String> commands = configuration.nodeRole()
+                == ServerConfiguration.NodeRole.PRIMARY
+                        ? java.util.Set.of(
+                                "PING", "HEALTH", "INFO",
+                                "BEGIN", "COMMIT", "ROLLBACK",
+                                "GET", "SET", "DEL", "EXPIRE", "TTL",
+                                "GETAT", "HISTORY", "DIFF", "RESTOREAT")
+                        : java.util.Set.of(
+                                "PING", "HEALTH", "INFO",
+                                "GET", "TTL", "GETAT", "HISTORY", "DIFF");
+        String denial = configuration.nodeRole() == ServerConfiguration.NodeRole.REPLICA
+                ? "READONLY replica does not accept writes"
+                : "ERR command is not permitted";
+        return AccessController.rules(Map.of(
+                "default",
+                new AccessController.Rule(commands, java.util.Set.of(""))),
+                denial);
     }
 
     /** Acquires infrastructure resources, starts both protocol endpoints, and publishes readiness. */
@@ -140,13 +233,25 @@ public final class TempoKvServer implements AutoCloseable {
                         Duration.between(recoveryStarted, Instant.now(clock)));
                 metrics.setGauge("recovery.version", versions.currentVersion());
             }
+            replicationManager.initialize(versions.currentVersion());
+            replicationManager.start();
             respServer = new RespServer(
-                    configuration.respPort(), metrics, dispatcher);
+                    configuration.respPort(),
+                    metrics,
+                    dispatcher,
+                    authenticator,
+                    accessController);
             respServer.start();
             sqlServer = new SqlServer(
-                    configuration.sqlPort(), metrics, dispatcher);
+                    configuration.sqlPort(),
+                    metrics,
+                    dispatcher,
+                    authenticator,
+                    accessController);
             sqlServer.start();
-            expirationWorker.start();
+            if (configuration.nodeRole() == ServerConfiguration.NodeRole.PRIMARY) {
+                expirationWorker.start();
+            }
             started = true;
             metrics.incrementCounter("server.starts");
             metrics.setGauge("server.lock_held", 1);
@@ -189,9 +294,25 @@ public final class TempoKvServer implements AutoCloseable {
             }
         }
         expirationWorker.close();
+        if (configuration.nodeRole() == ServerConfiguration.NodeRole.REPLICA) {
+            try {
+                replicationManager.close();
+            } catch (IOException exception) {
+                if (failure == null) failure = exception;
+                else failure.addSuppressed(exception);
+            }
+        }
         if (snapshotWriter != null) {
             try {
                 snapshotAndCompact();
+            } catch (IOException exception) {
+                if (failure == null) failure = exception;
+                else failure.addSuppressed(exception);
+            }
+        }
+        if (configuration.nodeRole() == ServerConfiguration.NodeRole.PRIMARY) {
+            try {
+                replicationManager.close();
             } catch (IOException exception) {
                 if (failure == null) failure = exception;
                 else failure.addSuppressed(exception);
@@ -219,7 +340,8 @@ public final class TempoKvServer implements AutoCloseable {
     public synchronized HealthStatus health() {
         if (started
                 && (respServer == null || !respServer.isRunning()
-                    || sqlServer == null || !sqlServer.isRunning())
+                    || sqlServer == null || !sqlServer.isRunning()
+                    || !replicationManager.isRunning())
                 && healthService.currentHealth().state() != ServerHealth.STOPPING) {
             healthService.markDegraded("A protocol event loop is not running");
             metrics.setGauge("server.ready", 0);
@@ -244,7 +366,8 @@ public final class TempoKvServer implements AutoCloseable {
                 && respServer != null
                 && respServer.isRunning()
                 && sqlServer != null
-                && sqlServer.isRunning();
+                && sqlServer.isRunning()
+                && replicationManager.isRunning();
     }
 
     /** Returns the bound RESP port after the server becomes ready. */
@@ -263,6 +386,11 @@ public final class TempoKvServer implements AutoCloseable {
         return sqlServer.port();
     }
 
+    /** Returns the bound primary replication port after startup. */
+    public synchronized int replicationPort() throws IOException {
+        return replicationManager.port();
+    }
+
     /**
      * Applies retention, publishes a validated snapshot, and compacts only through the oldest
      * retained valid snapshot so a corruption fallback remains recoverable.
@@ -271,10 +399,14 @@ public final class TempoKvServer implements AutoCloseable {
         if (snapshotWriter == null || snapshotStore == null || walCompactor == null) return 0;
         Instant startedAt = Instant.now(clock);
         try {
-            int collected = garbageCollector.collect(storage, startedAt, 0);
+            int collected = garbageCollector.collect(
+                    storage,
+                    startedAt,
+                    snapshotManager.oldestActiveVersion());
             metrics.addCounter("history.versions_collected", collected);
             long publishedVersion = snapshotWriter.write(storage);
-            long safeVersion = snapshotStore.safeCompactionVersion();
+            long safeVersion = replicationManager.safeCompactionVersion(
+                    snapshotStore.safeCompactionVersion());
             walCompactor.compactThrough(safeVersion);
             metrics.incrementCounter("snapshot.successes");
             metrics.setGauge("snapshot.version", publishedVersion);
@@ -320,6 +452,11 @@ public final class TempoKvServer implements AutoCloseable {
             }
         }
         expirationWorker.close();
+        try {
+            replicationManager.close();
+        } catch (IOException closeFailure) {
+            failure.addSuppressed(closeFailure);
+        }
         if (writeAheadLog != null) {
             try { writeAheadLog.close(); } catch (IOException closeFailure) { failure.addSuppressed(closeFailure); }
         }

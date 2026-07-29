@@ -21,7 +21,7 @@ public final class RespServer implements AutoCloseable {
     private ServerSocketChannel socket;
     private NioEventLoop eventLoop;
 
-    /** Creates an endpoint over an already-composed dispatcher using permissive E2 security. */
+    /** Creates an endpoint over an already-composed dispatcher using explicit open security. */
     public RespServer(
             int port, MetricsRegistry metrics, CommandDispatcher dispatcher) {
         this(

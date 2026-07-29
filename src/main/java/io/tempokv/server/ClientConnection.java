@@ -78,10 +78,28 @@ public final class ClientConnection {
     }
 
     /** Closes this connection exactly once. */
-    void close() throws IOException { if (!closed) { closed = true; try { channel.close(); } finally { onClose.run(); } } }
+    void close() throws IOException {
+        if (!closed) {
+            closed = true;
+            try {
+                try {
+                    processor.onClose();
+                } finally {
+                    channel.close();
+                }
+            } finally {
+                onClose.run();
+            }
+        }
+    }
 
     /** Receives transport bytes and emits ordered response bytes without accessing the socket. */
-    @FunctionalInterface public interface ConnectionProcessor { void onBytes(byte[] bytes, Consumer<byte[]> responses); }
+    @FunctionalInterface public interface ConnectionProcessor {
+        /** Processes one transport chunk and emits zero or more complete responses. */
+        void onBytes(byte[] bytes, Consumer<byte[]> responses);
+        /** Releases per-session resources when the transport is closed. */
+        default void onClose() { }
+    }
 
     /** Signals bounded connection shedding when a slow client stops consuming responses. */
     static final class BackpressureException extends RuntimeException {

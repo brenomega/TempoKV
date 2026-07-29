@@ -36,8 +36,23 @@ public final class RespConnectionHandler implements ClientConnection.ConnectionP
             for (RespFrame frame : decoder.feed(bytes)) {
                 long started = System.nanoTime(); CommandResult result;
                 try {
-                    var command = mapper.map(frame);
-                    result = accessController.isAllowed(session, command) ? dispatcher.dispatch(command, session) : CommandResult.error("NOAUTH command is not permitted");
+                    var credentials = mapper.credentials(frame);
+                    if (credentials.isPresent()) {
+                        var supplied = credentials.orElseThrow();
+                        result = authenticator.authenticate(
+                                session,
+                                supplied.username(),
+                                supplied.password())
+                                ? CommandResult.simpleString("OK")
+                                : CommandResult.error(
+                                        "ERR invalid credentials");
+                    } else {
+                        var command = mapper.map(frame);
+                        result = accessController.isAllowed(session, command)
+                                ? dispatcher.dispatch(command, session)
+                                : CommandResult.error(accessController.denialMessage(
+                                        session, command));
+                    }
                 } catch (RespCommandMapper.CommandMappingException | IllegalArgumentException | CommitFailedException exception) {
                     result = CommandResult.error(exception.getMessage());
                 }
@@ -45,5 +60,10 @@ public final class RespConnectionHandler implements ClientConnection.ConnectionP
                 responses.accept(encoder.encode(result));
             }
         } catch (RespDecoder.ProtocolException exception) { responses.accept(encoder.encode(CommandResult.error(exception.getMessage()))); }
+    }
+
+    /** Aborts and releases an active transaction if the RESP connection is lost. */
+    @Override public void onClose() {
+        session.close();
     }
 }

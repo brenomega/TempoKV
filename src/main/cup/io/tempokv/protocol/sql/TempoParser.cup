@@ -55,6 +55,7 @@ terminal SELECT, FROM, WHERE, UPSERT, INTO, VALUES, DELETE;
 terminal AS, OF, HISTORY, DIFF, RESTORE, TO, BETWEEN, AND;
 terminal ORDER, BY, LIMIT, OFFSET, ASC, DESC;
 terminal BEGIN, COMMIT, ROLLBACK;
+terminal PING, HEALTH, INFO;
 terminal String VERSION, TIMESTAMP, KEY, VALUE, STATE, COMMITTED_AT;
 terminal LPAREN, RPAREN, COMMA, SEMICOLON, STAR, EQ, GTE;
 terminal String IDENT, STRING;
@@ -126,6 +127,12 @@ statement ::= SELECT projection:p FROM identifier:t as_of_opt:a optional_key_pre
             | ROLLBACK
               {: RESULT = new Statement.TransactionControl(
                        Statement.TransactionControl.Kind.ROLLBACK); :}
+            | PING
+              {: RESULT = new Statement.Admin(Statement.Admin.Kind.PING); :}
+            | HEALTH
+              {: RESULT = new Statement.Admin(Statement.Admin.Kind.HEALTH); :}
+            | INFO
+              {: RESULT = new Statement.Admin(Statement.Admin.Kind.INFO); :}
             ;
 
 projection ::= STAR

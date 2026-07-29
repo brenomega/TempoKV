@@ -33,8 +33,8 @@ public final class SqlSemanticAnalyzer {
                 yield diff;
             }
             case Statement.Restore restore -> restore;
-            case Statement.TransactionControl control -> throw semantic(
-                    control.kind() + " requires the E7 transaction manager");
+            case Statement.TransactionControl control -> control;
+            case Statement.Admin admin -> admin;
         };
     }
 

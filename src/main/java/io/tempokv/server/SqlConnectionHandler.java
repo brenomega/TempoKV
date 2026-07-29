@@ -152,4 +152,9 @@ public final class SqlConnectionHandler
         insideString = false;
         pendingStringQuote = false;
     }
+
+    /** Aborts and releases an active transaction if the SQL connection is lost. */
+    @Override public void onClose() {
+        session.close();
+    }
 }

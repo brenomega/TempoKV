@@ -64,9 +64,9 @@ AND TIMESTAMP '2026-01-02T00:00:00Z';
 RESTORE 'profile' TO VERSION 1;
 ```
 
-`BEGIN`, `COMMIT` e `ROLLBACK` já pertencem à gramática e produzem AST tipada,
-mas a análise semântica informa que sua execução depende do gerenciador de
-transações da E7.
+Na etapa 7, `BEGIN`, `COMMIT` e `ROLLBACK` são planejados como
+`TransactionCommand` e executados pelo mesmo dispatcher. `PING`, `HEALTH` e
+`INFO` também são aceitos como instruções administrativas.
 
 ## Semântica comum com RESP
 

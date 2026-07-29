@@ -1,8 +1,8 @@
-# TempoKV — Protocolo RESP suportado até a E5
+# TempoKV — Protocolo RESP suportado até a E7
 
 O endpoint RESP escuta todas as interfaces na porta configurada por
 `--resp-port` (padrão `6379`). Ele usa RESP2 para os fluxos UC-02, UC-03,
-UC-05, UC-06 e UC-07.
+UC-05, UC-06, UC-07, UC-08, UC-09 e UC-12.
 
 ## Frames reconhecidos
 
@@ -13,6 +13,10 @@ frame incompleto e pode consumir diversos frames de uma única leitura.
 ## Comandos disponíveis
 
 `PING` continua disponível e responde `+PONG\r\n`.
+
+`HEALTH` retorna pares com estado, código operacional, motivo e instante da
+última transição. `INFO` retorna pares ordenados com papel, versão, conexões,
+WAL, snapshots, conflitos, métricas e percentis de latência.
 
 As operações key-value atuais são `GET`, `SET`, `DEL`, `EXPIRE` e `TTL`.
 
@@ -30,6 +34,11 @@ As operações temporais introduzidas na E4 são:
   `MISSING`; valores inexistentes usam nulo RESP.
 - `RESTOREAT key version`: cria uma nova versão a partir do valor (ou tombstone)
   da versão retida e retorna a nova versão. Não remove versões posteriores.
+
+`BEGIN`, `COMMIT` e `ROLLBACK` controlam a transação da conexão. Durante a
+transação, leituras atuais usam um snapshot estável e mutações ficam no write
+set. `COMMIT` publica todas em uma versão ou retorna conflito antes do WAL;
+`ROLLBACK` descarta o conjunto sem criar versão.
 
 Por exemplo, um `GETAT` é codificado como:
 
@@ -49,9 +58,12 @@ snapshots permanecem disponíveis; pontos coletados retornam erro de histórico
 indisponível. As métricas `history.versions_collected` e
 `history.last_collection_removed` tornam essa manutenção observável.
 
-Autenticação e autorização são permissivas nesta etapa; elas já fazem parte do
-pipeline para que políticas reais possam ser adicionadas sem acoplar handlers a
-sockets.
+Na E7, autenticação e ACL continuam fora dos handlers de negócio.
+`AccessController` autoriza por identidade, comando e prefixo de chave; uma
+negação retorna `-ERR command is not permitted`.
+Endpoints compostos com `Authenticator.users` aceitam
+`AUTH username password`; credenciais inválidas retornam um erro sem alterar a
+identidade atual da sessão.
 
 Com `--persistence-enabled=true`, mutações confirmadas são sincronizadas no WAL
 antes da resposta. Falhas de append ou fsync retornam `-ERR commit could not be

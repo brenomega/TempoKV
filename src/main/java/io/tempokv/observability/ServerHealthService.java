@@ -55,6 +55,17 @@ public final class ServerHealthService {
         return current.get();
     }
 
+    /** Returns a stable machine-oriented code for the latest lifecycle state. */
+    public String operationalCode() {
+        return switch (current.get().state()) {
+            case READY -> "OK";
+            case DEGRADED -> "DEGRADED";
+            case STARTING -> "STARTING";
+            case RECOVERING -> "RECOVERING";
+            case STOPPING -> "STOPPING";
+        };
+    }
+
     /** Evaluates subsystem signals without overriding shutdown in progress. */
     public HealthStatus evaluate(Map<String, Boolean> subsystemSignals) {
         Objects.requireNonNull(subsystemSignals, "subsystemSignals");

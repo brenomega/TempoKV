@@ -2,6 +2,8 @@ package io.tempokv.storage;
 
 import io.tempokv.transaction.CommitRecord;
 import io.tempokv.transaction.Mutation;
+import io.tempokv.transaction.SnapshotManager;
+import io.tempokv.transaction.VersionGenerator;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -55,6 +57,45 @@ class HistoryGarbageCollectorTest {
                 store.history("key").stream()
                         .map(VersionedValue::version)
                         .toList());
+    }
+
+    /** Uses the live snapshot registry watermark and releases old history only after close. */
+    @Test
+    void defersCollectionWhileSnapshotManagerProtectsVersion() {
+        MvccStore store = new MvccStore();
+        VersionGenerator versions = new VersionGenerator();
+        for (long version = 1; version <= 2; version++) {
+            versions.advanceTo(version);
+            store.apply(record(
+                    version,
+                    "key",
+                    NOW.minus(Duration.ofDays(5 - version))));
+        }
+        SnapshotManager snapshots =
+                new SnapshotManager(versions::currentVersion);
+        long active = snapshots.openSnapshot();
+        for (long version = 3; version <= 4; version++) {
+            versions.advanceTo(version);
+            store.apply(record(
+                    version,
+                    "key",
+                    NOW.minus(Duration.ofDays(5 - version))));
+        }
+        HistoryGarbageCollector collector = new HistoryGarbageCollector(
+                new RetentionPolicy(
+                        new RetentionPolicy.Rule(1, Duration.ofHours(1)),
+                        Map.of()));
+
+        collector.collect(store, NOW, snapshots.oldestActiveVersion());
+        assertEquals(
+                List.of(4L, 3L, 2L),
+                store.history("key").stream()
+                        .map(VersionedValue::version).toList());
+
+        snapshots.releaseSnapshot(active);
+        collector.collect(store, NOW, snapshots.oldestActiveVersion());
+        assertEquals(List.of(4L), store.history("key").stream()
+                .map(VersionedValue::version).toList());
     }
 
     /** Chooses the most specific prefix rule deterministically. */

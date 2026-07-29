@@ -31,6 +31,12 @@ public interface StorageEngine {
     /** Returns the greatest version currently represented by this storage. */
     default long currentVersion() { return 0; }
 
+    /** Returns the latest committed version for one key, or zero if it has never existed. */
+    default long latestVersion(String key) {
+        List<VersionedValue> versions = history(key, 0, 1);
+        return versions.isEmpty() ? 0L : versions.getFirst().version();
+    }
+
     /** Distinguishes an absent key from history that retention has already removed. */
     record HistoricalValue(Status status, VersionedValue value) {
         /** Identifies the result of a historical lookup. */

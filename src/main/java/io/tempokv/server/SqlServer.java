@@ -26,7 +26,7 @@ public final class SqlServer implements AutoCloseable {
     private ServerSocketChannel socket;
     private NioEventLoop eventLoop;
 
-    /** Creates an endpoint over the shared dispatcher using permissive E6 security. */
+    /** Creates an endpoint over the shared dispatcher using explicit open security. */
     public SqlServer(
             int port,
             MetricsRegistry metrics,

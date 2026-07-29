@@ -84,6 +84,18 @@ public final class SnapshotStore {
         return Optional.empty();
     }
 
+    /** Encodes a validated snapshot for transfer over the replication protocol. */
+    public synchronized byte[] encodeForTransfer(StorageSnapshot snapshot)
+            throws IOException {
+        return encode(Objects.requireNonNull(snapshot, "snapshot"));
+    }
+
+    /** Decodes and validates a snapshot received from a trusted replication connection. */
+    public synchronized StorageSnapshot decodeTransfer(byte[] encoded)
+            throws IOException {
+        return decode(Objects.requireNonNull(encoded, "encoded"));
+    }
+
     /** Returns the oldest retained valid snapshot cutoff safe for conservative WAL compaction. */
     public synchronized long safeCompactionVersion() throws IOException {
         List<StorageSnapshot> valid = new ArrayList<>();
