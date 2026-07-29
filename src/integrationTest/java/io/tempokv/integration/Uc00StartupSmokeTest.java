@@ -10,7 +10,6 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.net.ServerSocket;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
@@ -106,7 +105,7 @@ class Uc00StartupSmokeTest {
 
         assertThrows(ConfigurationException.class,
                 () -> TempoKvApplication.bootstrap(
-                        new String[]{"--data-dir=" + dataDirectory, "--resp-port=0"}, Map.of()));
+                        new String[]{"--data-dir=" + dataDirectory, "--resp-port=-1"}, Map.of()));
 
         assertFalse(Files.exists(dataDirectory));
     }
@@ -123,14 +122,12 @@ class Uc00StartupSmokeTest {
         return jar;
     }
 
-    private static String[] serverArguments(Path dataDirectory) throws IOException {
-        try (ServerSocket resp = new ServerSocket(0); ServerSocket sql = new ServerSocket(0)) {
-            return new String[]{
-                    "--data-dir=" + dataDirectory,
-                    "--resp-port=" + resp.getLocalPort(),
-                    "--sql-port=" + sql.getLocalPort()
-            };
-        }
+    private static String[] serverArguments(Path dataDirectory) {
+        return new String[]{
+                "--data-dir=" + dataDirectory,
+                "--resp-port=0",
+                "--sql-port=0"
+        };
     }
 
     private static List<String> jarCommand(Path dataDirectory) throws IOException {

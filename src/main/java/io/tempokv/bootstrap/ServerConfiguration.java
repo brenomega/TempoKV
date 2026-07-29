@@ -53,12 +53,13 @@ public record ServerConfiguration(
 
     /** Validates and normalizes all configuration fields. */
     public ServerConfiguration {
-        validatePort(respPort, "respPort");
-        validatePort(sqlPort, "sqlPort");
+        validateBindablePort(respPort, "respPort");
+        validateBindablePort(sqlPort, "sqlPort");
         validatePort(replicationPort, "replicationPort");
         validatePort(primaryReplicationPort, "primaryReplicationPort");
-        if (respPort == sqlPort || respPort == replicationPort
-                || sqlPort == replicationPort) {
+        if (sameExplicitPort(respPort, sqlPort)
+                || sameExplicitPort(respPort, replicationPort)
+                || sameExplicitPort(sqlPort, replicationPort)) {
             throw new ConfigurationException("RESP, SQL and replication ports must be different");
         }
         dataDirectory = normalizeDirectory(dataDirectory);
@@ -290,11 +291,23 @@ public record ServerConfiguration(
         }
     }
 
-    /** Validates the usable TCP port range. */
+    /** Validates a TCP port that the local server can bind, including port zero. */
+    private static void validateBindablePort(int port, String name) {
+        if (port < 0 || port > 65_535) {
+            throw new ConfigurationException(name + " must be between 0 and 65535");
+        }
+    }
+
+    /** Validates the usable TCP port range for an explicitly addressed endpoint. */
     private static void validatePort(int port, String name) {
         if (port < 1 || port > 65_535) {
             throw new ConfigurationException(name + " must be between 1 and 65535");
         }
+    }
+
+    /** Port zero requests an ephemeral bind, so it cannot collide with another endpoint. */
+    private static boolean sameExplicitPort(int first, int second) {
+        return first != 0 && first == second;
     }
 
     /** Converts the configured data directory into a stable absolute path. */

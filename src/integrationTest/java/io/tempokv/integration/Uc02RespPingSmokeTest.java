@@ -4,7 +4,6 @@ import io.tempokv.bootstrap.TempoKvApplication;
 import io.tempokv.bootstrap.TempoKvServer;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -23,11 +22,10 @@ class Uc02RespPingSmokeTest {
     /** Keeps one connection open across fragmented and pipelined PING requests. */
     @Test
     void smokeTestRespondsToFragmentedAndPipelinedPingRequests() throws Exception {
-        Ports ports = availablePorts();
         TempoKvServer server = TempoKvApplication.bootstrap(new String[]{
                 "--data-dir=" + temporaryDirectory.resolve("data"),
-                "--resp-port=" + ports.resp(),
-                "--sql-port=" + ports.sql()
+                "--resp-port=0",
+                "--sql-port=0"
         }, Map.of());
         try (Socket client = new Socket("127.0.0.1", server.respPort())) {
             client.setSoTimeout(5000);
@@ -46,11 +44,10 @@ class Uc02RespPingSmokeTest {
     /** Serves hundreds of concurrent happy-path clients without serial socket blocking. */
     @Test
     void servesHundredsOfConcurrentConnections() throws Exception {
-        Ports ports = availablePorts();
         TempoKvServer server = TempoKvApplication.bootstrap(new String[]{
                 "--data-dir=" + temporaryDirectory.resolve("concurrent-data"),
-                "--resp-port=" + ports.resp(),
-                "--sql-port=" + ports.sql()
+                "--resp-port=0",
+                "--sql-port=0"
         }, Map.of());
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var requests = java.util.stream.IntStream.range(0, 200)
@@ -77,11 +74,10 @@ class Uc02RespPingSmokeTest {
     /** Keeps a responsive client moving while another connection does not consume output. */
     @Test
     void slowClientDoesNotBlockAnotherConnection() throws Exception {
-        Ports ports = availablePorts();
         TempoKvServer server = TempoKvApplication.bootstrap(new String[]{
                 "--data-dir=" + temporaryDirectory.resolve("slow-client-data"),
-                "--resp-port=" + ports.resp(),
-                "--sql-port=" + ports.sql()
+                "--resp-port=0",
+                "--sql-port=0"
         }, Map.of());
         try (Socket slow = new Socket("127.0.0.1", server.respPort());
                 Socket responsive =
@@ -105,17 +101,10 @@ class Uc02RespPingSmokeTest {
         }
     }
 
-    private static Ports availablePorts() throws Exception {
-        try (ServerSocket resp = new ServerSocket(0); ServerSocket sql = new ServerSocket(0)) {
-            return new Ports(resp.getLocalPort(), sql.getLocalPort());
-        }
-    }
-
     private static String readExactly(InputStream input, int length) throws Exception {
         byte[] response = input.readNBytes(length);
         if (response.length != length) throw new AssertionError("RESP server closed before completing its response");
         return new String(response, StandardCharsets.US_ASCII);
     }
 
-    private record Ports(int resp, int sql) { }
 }

@@ -15,7 +15,6 @@ import io.tempokv.transaction.Mutation;
 import io.tempokv.transaction.VersionGenerator;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.net.ServerSocket;
 import java.net.Socket;
 import java.time.Clock;
 import java.time.Instant;
@@ -43,8 +42,7 @@ class Uc11SnapshotCompactionSmokeTest {
     /** Runs operator-triggered snapshots through the server and recovers history plus residual WAL. */
     @Test
     void serverPublishesAndCompactsRecoverableSnapshots() throws Exception {
-        Ports ports = ports();
-        TempoKvServer server = start(ports);
+        TempoKvServer server = start();
         try (Socket client = new Socket("127.0.0.1", server.respPort())) {
             send(client, "SET", "key", "first");
             assertEquals("+OK\r\n", read(client, 5));
@@ -59,7 +57,7 @@ class Uc11SnapshotCompactionSmokeTest {
             server.close();
         }
 
-        TempoKvServer recovered = start(ports);
+        TempoKvServer recovered = start();
         try (Socket client = new Socket("127.0.0.1", recovered.respPort())) {
             send(client, "GET", "key");
             assertEquals("$5\r\nthird\r\n", read(client, 11));
@@ -70,11 +68,11 @@ class Uc11SnapshotCompactionSmokeTest {
         }
     }
 
-    private TempoKvServer start(Ports ports) throws Exception {
+    private TempoKvServer start() throws Exception {
         return TempoKvApplication.bootstrap(new String[]{
                 "--data-dir=" + directory.resolve("server-data"),
-                "--resp-port=" + ports.resp(),
-                "--sql-port=" + ports.sql(),
+                "--resp-port=0",
+                "--sql-port=0",
                 "--persistence-enabled=true"
         }, java.util.Map.of());
     }
@@ -93,11 +91,4 @@ class Uc11SnapshotCompactionSmokeTest {
         return new String(socket.getInputStream().readNBytes(length), StandardCharsets.UTF_8);
     }
 
-    private static Ports ports() throws Exception {
-        try (ServerSocket resp = new ServerSocket(0); ServerSocket sql = new ServerSocket(0)) {
-            return new Ports(resp.getLocalPort(), sql.getLocalPort());
-        }
-    }
-
-    private record Ports(int resp, int sql) { }
 }

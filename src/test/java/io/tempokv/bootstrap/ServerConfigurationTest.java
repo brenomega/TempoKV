@@ -44,11 +44,21 @@ class ServerConfigurationTest {
         assertEquals(ServerConfiguration.NodeRole.REPLICA, configuration.nodeRole());
     }
 
+    /** Allows the server endpoints to request atomically allocated ephemeral ports. */
+    @Test
+    void allowsEphemeralServerPorts() {
+        ServerConfiguration configuration = ServerConfiguration.load(
+                new String[]{"--resp-port=0", "--sql-port=0"}, Map.of());
+
+        assertEquals(0, configuration.respPort());
+        assertEquals(0, configuration.sqlPort());
+    }
+
     /** Rejects invalid ports before a server can acquire infrastructure resources. */
     @Test
     void rejectsInvalidPort() {
         assertThrows(ConfigurationException.class,
-                () -> ServerConfiguration.load(new String[]{"--resp-port=0"}, Map.of()));
+                () -> ServerConfiguration.load(new String[]{"--resp-port=-1"}, Map.of()));
     }
 
     /** Rejects replication identity fields before modified-UTF handshake encoding. */

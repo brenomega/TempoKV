@@ -4,7 +4,6 @@ import io.tempokv.bootstrap.TempoKvApplication;
 import io.tempokv.bootstrap.TempoKvServer;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -78,22 +77,15 @@ class Uc05HistoricalReadSmokeTest {
             return start(directory, "PT720H");
         }
         static ServerFixture start(Path directory, String retention) throws Exception {
-            Ports ports = availablePorts();
             return new ServerFixture(TempoKvApplication.bootstrap(new String[]{
                     "--data-dir=" + directory.resolve("data"),
-                    "--resp-port=" + ports.resp(),
-                    "--sql-port=" + ports.sql(),
+                    "--resp-port=0",
+                    "--sql-port=0",
                     "--history-retention=" + retention,
                     "--persistence-enabled=true"
             }, Map.of()));
         }
-        private static Ports availablePorts() throws Exception {
-            try (ServerSocket resp = new ServerSocket(0); ServerSocket sql = new ServerSocket(0)) {
-                return new Ports(resp.getLocalPort(), sql.getLocalPort());
-            }
-        }
         Socket client() throws Exception { Socket client = new Socket("127.0.0.1", server.respPort()); client.setSoTimeout(5_000); return client; }
         @Override public void close() throws Exception { server.close(); }
-        private record Ports(int resp, int sql) { }
     }
 }
