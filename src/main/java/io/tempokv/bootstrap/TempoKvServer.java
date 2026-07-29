@@ -12,15 +12,27 @@ import io.tempokv.observability.MetricsSnapshot;
 import io.tempokv.observability.ServerHealth;
 import io.tempokv.observability.ServerHealthService;
 import io.tempokv.persistence.DatabaseLock;
+import io.tempokv.persistence.FileSystemAdapter;
+import io.tempokv.persistence.FileWriteAheadLog;
+import io.tempokv.persistence.FsyncPolicy;
+import io.tempokv.persistence.RecoveryManager;
+import io.tempokv.persistence.SnapshotStore;
+import io.tempokv.persistence.SnapshotWriter;
+import io.tempokv.persistence.WalCompactor;
+import io.tempokv.persistence.WriteAheadLog;
 import io.tempokv.server.RespServer;
 import io.tempokv.storage.HistoryGarbageCollector;
 import io.tempokv.storage.MvccStore;
+import io.tempokv.storage.ExpirationWorker;
 import io.tempokv.storage.RetentionPolicy;
 import io.tempokv.transaction.CommitCoordinator;
 import io.tempokv.transaction.VersionGenerator;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -35,6 +47,16 @@ public final class TempoKvServer implements AutoCloseable {
     private final MetricsRegistry metrics;
     private final ServerHealthService healthService;
     private final CommandDispatcher dispatcher;
+    private final MvccStore storage;
+    private final VersionGenerator versions;
+    private final WriteAheadLog writeAheadLog;
+    private final RecoveryManager recoveryManager;
+    private final ExpirationWorker expirationWorker;
+    private final SnapshotStore snapshotStore;
+    private final SnapshotWriter snapshotWriter;
+    private final WalCompactor walCompactor;
+    private final HistoryGarbageCollector garbageCollector;
+    private final Clock clock;
     private RespServer respServer;
     private boolean started;
 
@@ -48,17 +70,42 @@ public final class TempoKvServer implements AutoCloseable {
         this.databaseLock = Objects.requireNonNull(databaseLock, "databaseLock");
         this.metrics = Objects.requireNonNull(metrics, "metrics");
         this.healthService = Objects.requireNonNull(healthService, "healthService");
-        Clock clock = Clock.systemUTC();
-        MvccStore storage = new MvccStore();
-        CommitCoordinator commits =
-                new CommitCoordinator(new VersionGenerator(), storage, clock);
+        this.clock = Clock.systemUTC();
+        this.storage = new MvccStore();
+        this.versions = new VersionGenerator();
+        if (configuration.persistenceEnabled()) {
+            try {
+                FileSystemAdapter fileSystem = new FileSystemAdapter();
+                this.writeAheadLog = new FileWriteAheadLog(configuration.dataDirectory(), fileSystem, FsyncPolicy.ALWAYS);
+                this.snapshotStore = new SnapshotStore(configuration.dataDirectory(), fileSystem);
+                this.recoveryManager = new RecoveryManager(snapshotStore, writeAheadLog);
+                this.snapshotWriter = new SnapshotWriter(snapshotStore);
+                this.walCompactor = new WalCompactor(writeAheadLog);
+            } catch (IOException exception) { throw new UncheckedIOException("Could not configure persistence", exception); }
+        } else {
+            this.writeAheadLog = null;
+            this.recoveryManager = null;
+            this.snapshotStore = null;
+            this.snapshotWriter = null;
+            this.walCompactor = null;
+        }
+        CommitCoordinator commits = new CommitCoordinator(
+                versions,
+                storage,
+                clock,
+                record -> {
+                    if (writeAheadLog != null) writeAheadLog.append(record);
+                });
+        this.expirationWorker = new ExpirationWorker(storage, commits, clock, failure -> {
+            metrics.incrementCounter("expiration.failures");
+            healthService.markDegraded("Active expiration failed");
+        });
         RetentionPolicy retention = new RetentionPolicy(
                 new RetentionPolicy.Rule(
                         DEFAULT_MAX_RETAINED_VERSIONS,
                         configuration.historyRetention()),
                 Map.of());
-        HistoryGarbageCollector garbageCollector =
-                new HistoryGarbageCollector(retention);
+        this.garbageCollector = new HistoryGarbageCollector(retention);
         this.dispatcher = new CommandDispatcher(
                 new CommandValidator(),
                 List.<CommandHandler<? extends io.tempokv.application.Command>>of(
@@ -82,9 +129,19 @@ public final class TempoKvServer implements AutoCloseable {
         metrics.setGauge("server.ready", 0);
         try {
             databaseLock.acquire();
+            if (recoveryManager != null) {
+                healthService.markRecovering();
+                Instant recoveryStarted = Instant.now(clock);
+                recoveryManager.recover(storage, versions);
+                metrics.recordLatency(
+                        "recovery.duration",
+                        Duration.between(recoveryStarted, Instant.now(clock)));
+                metrics.setGauge("recovery.version", versions.currentVersion());
+            }
             respServer = new RespServer(
                     configuration.respPort(), metrics, dispatcher);
             respServer.start();
+            expirationWorker.start();
             started = true;
             metrics.incrementCounter("server.starts");
             metrics.setGauge("server.lock_held", 1);
@@ -115,6 +172,18 @@ public final class TempoKvServer implements AutoCloseable {
             } finally {
                 respServer = null;
             }
+        }
+        expirationWorker.close();
+        if (snapshotWriter != null) {
+            try {
+                snapshotAndCompact();
+            } catch (IOException exception) {
+                if (failure == null) failure = exception;
+                else failure.addSuppressed(exception);
+            }
+        }
+        if (writeAheadLog != null) {
+            try { writeAheadLog.close(); } catch (IOException exception) { if (failure == null) failure = exception; else failure.addSuppressed(exception); }
         }
         try {
             databaseLock.close();
@@ -165,6 +234,36 @@ public final class TempoKvServer implements AutoCloseable {
         return respServer.port();
     }
 
+    /**
+     * Applies retention, publishes a validated snapshot, and compacts only through the oldest
+     * retained valid snapshot so a corruption fallback remains recoverable.
+     */
+    public synchronized long snapshotAndCompact() throws IOException {
+        if (snapshotWriter == null || snapshotStore == null || walCompactor == null) return 0;
+        Instant startedAt = Instant.now(clock);
+        try {
+            int collected = garbageCollector.collect(storage, startedAt, 0);
+            metrics.addCounter("history.versions_collected", collected);
+            long publishedVersion = snapshotWriter.write(storage);
+            long safeVersion = snapshotStore.safeCompactionVersion();
+            walCompactor.compactThrough(safeVersion);
+            metrics.incrementCounter("snapshot.successes");
+            metrics.setGauge("snapshot.version", publishedVersion);
+            metrics.setGauge("wal.compacted_through", safeVersion);
+            if (writeAheadLog instanceof FileWriteAheadLog fileWal) {
+                metrics.setGauge("wal.bytes", fileWal.sizeBytes());
+            }
+            metrics.recordLatency(
+                    "snapshot.duration", Duration.between(startedAt, Instant.now(clock)));
+            return publishedVersion;
+        } catch (IOException | RuntimeException failure) {
+            metrics.incrementCounter("snapshot.failures");
+            healthService.markDegraded("Snapshot or WAL compaction failed");
+            if (failure instanceof IOException io) throw io;
+            throw new IOException("Snapshot or WAL compaction failed", failure);
+        }
+    }
+
     /** Delegates resource cleanup to the ordered shutdown operation. */
     @Override
     public void close() throws IOException {
@@ -181,6 +280,10 @@ public final class TempoKvServer implements AutoCloseable {
             } finally {
                 respServer = null;
             }
+        }
+        expirationWorker.close();
+        if (writeAheadLog != null) {
+            try { writeAheadLog.close(); } catch (IOException closeFailure) { failure.addSuppressed(closeFailure); }
         }
         try {
             databaseLock.close();

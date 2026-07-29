@@ -51,7 +51,7 @@ public final class RespServer implements AutoCloseable {
         if (eventLoop != null) return;
         socket = ServerSocketChannel.open();
         try {
-            socket.bind(new InetSocketAddress("127.0.0.1", port));
+            socket.bind(new InetSocketAddress(port));
             eventLoop = new NioEventLoop(
                     ignored -> metrics.incrementCounter(
                             "resp.event_loop_failures"));

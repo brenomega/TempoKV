@@ -50,6 +50,50 @@ public final class MvccStore implements StorageEngine {
     /** Exposes scheduled expirations to the E5 active-expiration worker. */
     public TtlIndex ttlIndex() { return ttlIndex; }
 
+    /** Captures an atomic retained-state view suitable for durable persistence. */
+    @Override public StorageSnapshot snapshot() {
+        KeyIndex.Snapshot snapshot = index.snapshot();
+        long version = snapshot.chains().values().stream().map(VersionChain::versions)
+                .flatMap(List::stream).mapToLong(VersionedValue::version).max().orElse(0);
+        Map<String, StorageSnapshot.HistoryBoundary> boundaries = new HashMap<>();
+        snapshot.boundaries().forEach((key, boundary) -> boundaries.put(
+                key,
+                new StorageSnapshot.HistoryBoundary(
+                        boundary.firstVersion(),
+                        boundary.firstCommittedAt(),
+                        boundary.truncated())));
+        return new StorageSnapshot(version, snapshot.chains(), boundaries, ttlIndex.entries());
+    }
+
+    /** Restores chains and rebuilds the derived TTL index from their retained heads. */
+    @Override public synchronized void restore(StorageSnapshot snapshot) {
+        Objects.requireNonNull(snapshot, "snapshot");
+        Map<String, KeyIndex.HistoryBoundary> boundaries = new HashMap<>();
+        snapshot.boundaries().forEach((key, boundary) -> boundaries.put(
+                key,
+                new KeyIndex.HistoryBoundary(
+                        boundary.firstVersion(),
+                        boundary.firstCommittedAt(),
+                        boundary.truncated())));
+        index.replaceAll(snapshot.chains(), boundaries);
+        ttlIndex.clear();
+        snapshot.expirations().forEach(
+                entry -> ttlIndex.add(entry.key(), entry.version(), entry.expiresAt()));
+    }
+
+    /** Returns the highest version in the atomically published state. */
+    @Override public long currentVersion() { return snapshot().version(); }
+
+    /** Checks whether a scheduled expiration still refers to the current version. */
+    public boolean isCurrentVersion(String key, long version, Instant now) {
+        return index.get(requireKey(key)).map(VersionChain::versions)
+                .filter(values -> !values.isEmpty())
+                .map(values -> values.getFirst())
+                .map(value -> !value.tombstone() && value.version() == version
+                        && value.expiresAt() != null && !value.expiresAt().isAfter(now))
+                .orElse(false);
+    }
+
     /** Returns all retained versions for one key in newest-first order. */
     public List<VersionedValue> history(String key) {
         return index.get(requireKey(key)).map(VersionChain::versions).orElseGet(List::of);
@@ -116,6 +160,14 @@ public final class MvccStore implements StorageEngine {
                     record.version(), mutation.value(), false, record.committedAt(), null, null);
             case TOMBSTONE -> new VersionedValue(
                     record.version(), null, true, record.committedAt(), null, null);
+            case EXPIRED_TOMBSTONE -> new VersionedValue(
+                    record.version(),
+                    null,
+                    true,
+                    record.committedAt(),
+                    null,
+                    null,
+                    VersionedValue.TombstoneReason.EXPIRED);
             case EXPIRE -> existing.current(record.committedAt())
                     .map(value -> new VersionedValue(
                             record.version(), value.value(), false, record.committedAt(),

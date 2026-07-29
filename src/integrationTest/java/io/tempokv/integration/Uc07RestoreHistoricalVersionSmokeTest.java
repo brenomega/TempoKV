@@ -23,6 +23,21 @@ class Uc07RestoreHistoricalVersionSmokeTest {
             String expected = "+OK\r\n+OK\r\n:3\r\n$5\r\nfirst\r\n$6\r\nsecond\r\n";
             assertEquals(expected, readExactly(client.getInputStream(), expected.getBytes(StandardCharsets.UTF_8).length));
         }
+        try (Uc05HistoricalReadSmokeTest.ServerFixture fixture =
+                        Uc05HistoricalReadSmokeTest.ServerFixture.start(temporaryDirectory);
+                Socket client = fixture.client()) {
+            client.getOutputStream().write((
+                    request("GET", "profile")
+                            + request("GETAT", "profile", "VERSION", "2"))
+                    .getBytes(StandardCharsets.UTF_8));
+            client.getOutputStream().flush();
+            String expected = "$5\r\nfirst\r\n$6\r\nsecond\r\n";
+            assertEquals(
+                    expected,
+                    readExactly(
+                            client.getInputStream(),
+                            expected.getBytes(StandardCharsets.UTF_8).length));
+        }
     }
 
     private static String request(String... values) { StringBuilder request = new StringBuilder("*").append(values.length).append("\r\n"); for (String value : values) request.append('$').append(value.getBytes(StandardCharsets.UTF_8).length).append("\r\n").append(value).append("\r\n"); return request.toString(); }

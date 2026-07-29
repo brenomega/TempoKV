@@ -1,6 +1,6 @@
-# TempoKV — Protocolo RESP suportado até a E4
+# TempoKV — Protocolo RESP suportado até a E5
 
-O endpoint RESP é um servidor TCP em `127.0.0.1` na porta configurada por
+O endpoint RESP escuta todas as interfaces na porta configurada por
 `--resp-port` (padrão `6379`). Ele usa RESP2 para os fluxos UC-02, UC-03,
 UC-05, UC-06 e UC-07.
 
@@ -52,3 +52,7 @@ indisponível. As métricas `history.versions_collected` e
 Autenticação e autorização são permissivas nesta etapa; elas já fazem parte do
 pipeline para que políticas reais possam ser adicionadas sem acoplar handlers a
 sockets.
+
+Com `--persistence-enabled=true`, mutações confirmadas são sincronizadas no WAL
+antes da resposta. Falhas de append ou fsync retornam `-ERR commit could not be
+made durable` e não publicam a mutação no estado corrente.

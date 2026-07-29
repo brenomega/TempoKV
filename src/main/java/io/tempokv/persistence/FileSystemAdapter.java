@@ -10,12 +10,51 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.OpenOption;
+import java.util.List;
 import java.util.Objects;
 
 /**
  * Isolates filesystem operations needed by TempoKV infrastructure.
  */
 public class FileSystemAdapter {
+
+    /** Returns whether a path exists without following a final symbolic link. */
+    public boolean exists(Path path) {
+        return Files.exists(normalize(path, "path"), LinkOption.NOFOLLOW_LINKS);
+    }
+
+    /** Returns the size of a regular file. */
+    public long size(Path path) throws IOException {
+        return Files.size(normalize(path, "path"));
+    }
+
+    /** Reads a complete bounded infrastructure artifact. */
+    public byte[] readAllBytes(Path path) throws IOException {
+        return Files.readAllBytes(normalize(path, "path"));
+    }
+
+    /** Opens a file channel so tests can inject append, sync, and close failures. */
+    public FileChannel open(Path path, OpenOption... options) throws IOException {
+        return FileChannel.open(normalize(path, "path"), options);
+    }
+
+    /** Lists regular direct children with the requested suffix in lexical order. */
+    public List<Path> listRegularFiles(Path directory, String suffix) throws IOException {
+        Path normalized = normalize(directory, "directory");
+        if (!exists(normalized)) return List.of();
+        try (var paths = Files.list(normalized)) {
+            return paths.filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
+                    .filter(path -> path.getFileName().toString().endsWith(suffix))
+                    .sorted()
+                    .toList();
+        }
+    }
+
+    /** Deletes one exact infrastructure file when it exists. */
+    public boolean deleteIfExists(Path path) throws IOException {
+        return Files.deleteIfExists(normalize(path, "path"));
+    }
 
     /** Creates a real directory without accepting a symbolic link as its final path. */
     public void createDirectories(Path directory) throws IOException {
@@ -92,6 +131,7 @@ public class FileSystemAdapter {
             throw new IOException("Atomic move is not supported between "
                     + normalizedSource + " and " + normalizedTarget, exception);
         }
+        forceDirectory(parent);
     }
 
     /** Forces file content and metadata to stable storage. */
@@ -101,6 +141,14 @@ public class FileSystemAdapter {
             throw new IOException("Cannot force a closed file channel");
         }
         channel.force(true);
+    }
+
+    /** Forces directory metadata after publishing or deleting durable artifacts. */
+    public void forceDirectory(Path directory) throws IOException {
+        if (directory == null) return;
+        try (FileChannel channel = FileChannel.open(normalize(directory, "directory"), StandardOpenOption.READ)) {
+            channel.force(true);
+        }
     }
 
     /** Normalizes a required path before it reaches the filesystem. */

@@ -11,7 +11,33 @@ public record VersionedValue(
         boolean tombstone,
         Instant committedAt,
         Instant expiresAt,
-        Long restoredFromVersion) {
+        Long restoredFromVersion,
+        TombstoneReason tombstoneReason) {
+    /** Identifies why a tombstone was committed for historical auditing. */
+    public enum TombstoneReason { DELETED, EXPIRED, RESTORED }
+
+    /** Preserves the E4 constructor shape while deriving ordinary tombstone provenance. */
+    public VersionedValue(
+            long version,
+            byte[] value,
+            boolean tombstone,
+            Instant committedAt,
+            Instant expiresAt,
+            Long restoredFromVersion) {
+        this(
+                version,
+                value,
+                tombstone,
+                committedAt,
+                expiresAt,
+                restoredFromVersion,
+                tombstone
+                        ? (restoredFromVersion == null
+                                ? TombstoneReason.DELETED
+                                : TombstoneReason.RESTORED)
+                        : null);
+    }
+
     /** Preserves the E3 constructor shape for versions without restoration provenance. */
     public VersionedValue(
             long version, byte[] value, boolean tombstone, Instant committedAt, Instant expiresAt) {
@@ -25,6 +51,9 @@ public record VersionedValue(
         if (tombstone == (value != null)) throw new IllegalArgumentException("A version must contain either a value or a tombstone");
         committedAt = Objects.requireNonNull(committedAt, "committedAt");
         if (tombstone && expiresAt != null) throw new IllegalArgumentException("Tombstones must not expire");
+        if (tombstone != (tombstoneReason != null)) {
+            throw new IllegalArgumentException("Only tombstones require a tombstone reason");
+        }
         if (restoredFromVersion != null && restoredFromVersion < 1) {
             throw new IllegalArgumentException("Restored source version must be positive");
         }

@@ -75,7 +75,8 @@ class Uc05HistoricalReadSmokeTest {
                     "--data-dir=" + directory.resolve("data"),
                     "--resp-port=" + ports.resp(),
                     "--sql-port=" + ports.sql(),
-                    "--history-retention=" + retention
+                    "--history-retention=" + retention,
+                    "--persistence-enabled=true"
             }, Map.of()));
         }
         private static Ports availablePorts() throws Exception {

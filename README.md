@@ -1,9 +1,10 @@
 # TempoKV
 
-TempoKV is an in-memory temporal key-value server. Stages E1–E4 provide
+TempoKV is a durable temporal key-value server. Stages E1–E5 provide
 configuration and lifecycle management, a non-blocking RESP2 endpoint, current
 key-value commands, MVCC history, binary diffs, append-only restoration, and
-configurable history retention.
+configurable history retention. E5 adds a segmented WAL, recovery, active
+expiration, validated snapshots, and conservative WAL compaction.
 
 ## Requirements
 
@@ -19,7 +20,7 @@ configurable history retention.
 ```
 
 `check` runs unit tests and every integration smoke test implemented through
-E4. The executable JAR is written to `build/libs/tempokv-0.1.0.jar`.
+E5. The executable JAR is written to `build/libs/tempokv-0.1.0.jar`.
 Combined unit/integration coverage is written to
 `build/reports/jacoco/jacocoAllReport/html/index.html`.
 
@@ -29,9 +30,9 @@ Combined unit/integration coverage is written to
 java -jar build/libs/tempokv-0.1.0.jar --data-dir=./data
 ```
 
-The process accepts RESP clients on `--resp-port` (default `6379`) until normal
+The process accepts RESP clients on all interfaces at `--resp-port` (default `6379`) until normal
 shutdown, when it closes network resources and releases the data-directory
-lock.
+lock. Use host firewall/container port publishing to limit exposure.
 
 ## Run with Docker
 
@@ -40,8 +41,9 @@ docker compose up --build
 redis-cli -p 6379 PING
 ```
 
-Compose publishes RESP on `127.0.0.1:6379`/`6379` and persists `/data` in a
-named volume. Stop the node with `Ctrl+C` or `docker compose down`.
+Compose publishes RESP on `127.0.0.1:6379`/`6379`, enables persistence, and
+persists `/data` in a named volume. Stop the node with `Ctrl+C` or
+`docker compose down`.
 
 ## Configuration
 
@@ -62,7 +64,7 @@ Use `--config=/path/to/tempokv.properties` or `TEMPOKV_CONFIG` to select the
 optional file. File keys use the `tempokv.*` names accepted by
 `ServerConfiguration`.
 
-## RESP commands through E4
+## RESP commands through E5
 
 Current-state commands:
 

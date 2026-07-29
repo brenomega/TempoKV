@@ -12,7 +12,14 @@ public record Mutation(
         Instant expiresAt,
         Long restoredFromVersion) {
     /** Distinguishes ordinary changes from value and tombstone restorations. */
-    public enum Type { PUT, TOMBSTONE, EXPIRE, RESTORE_PUT, RESTORE_TOMBSTONE }
+    public enum Type {
+        PUT,
+        TOMBSTONE,
+        EXPIRE,
+        RESTORE_PUT,
+        RESTORE_TOMBSTONE,
+        EXPIRED_TOMBSTONE
+    }
 
     /** Preserves the E3 constructor shape for ordinary mutations. */
     public Mutation(String key, Type type, byte[] value, Instant expiresAt) {
@@ -48,6 +55,11 @@ public record Mutation(
 
     /** Creates a deletion tombstone without removing historical versions. */
     public static Mutation tombstone(String key) { return new Mutation(key, Type.TOMBSTONE, null, null); }
+
+    /** Creates a tombstone whose durable history identifies automatic TTL expiration. */
+    public static Mutation expiredTombstone(String key) {
+        return new Mutation(key, Type.EXPIRED_TOMBSTONE, null, null);
+    }
 
     /** Creates a mutation that changes the expiration of an existing value. */
     public static Mutation expire(String key, Instant expiresAt) { return new Mutation(key, Type.EXPIRE, null, expiresAt); }

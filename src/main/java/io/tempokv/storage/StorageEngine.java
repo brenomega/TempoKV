@@ -22,6 +22,15 @@ public interface StorageEngine {
     /** Applies every mutation in a previously validated commit as one publication. */
     void apply(CommitRecord record);
 
+    /** Materializes the retained state needed to create a durable snapshot. */
+    default StorageSnapshot snapshot() { throw new UnsupportedOperationException("Snapshots are not supported"); }
+
+    /** Replaces storage with a previously validated durable snapshot. */
+    default void restore(StorageSnapshot snapshot) { throw new UnsupportedOperationException("Snapshots are not supported"); }
+
+    /** Returns the greatest version currently represented by this storage. */
+    default long currentVersion() { return 0; }
+
     /** Distinguishes an absent key from history that retention has already removed. */
     record HistoricalValue(Status status, VersionedValue value) {
         /** Identifies the result of a historical lookup. */

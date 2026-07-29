@@ -5,6 +5,7 @@ services:
     image: tempokv:local
     environment:
       TEMPOKV_DATA_DIR: /data
+      TEMPOKV_PERSISTENCE_ENABLED: "true"
     ports:
       - "127.0.0.1:6379:6379"
     volumes:

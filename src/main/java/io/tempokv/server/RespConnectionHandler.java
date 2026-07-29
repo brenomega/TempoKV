@@ -9,6 +9,7 @@ import io.tempokv.protocol.resp.RespEncoder;
 import io.tempokv.protocol.resp.RespFrame;
 import io.tempokv.security.AccessController;
 import io.tempokv.security.Authenticator;
+import io.tempokv.transaction.CommitFailedException;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.function.Consumer;
@@ -37,7 +38,9 @@ public final class RespConnectionHandler implements ClientConnection.ConnectionP
                 try {
                     var command = mapper.map(frame);
                     result = accessController.isAllowed(session, command) ? dispatcher.dispatch(command, session) : CommandResult.error("NOAUTH command is not permitted");
-                } catch (RespCommandMapper.CommandMappingException | IllegalArgumentException exception) { result = CommandResult.error(exception.getMessage()); }
+                } catch (RespCommandMapper.CommandMappingException | IllegalArgumentException | CommitFailedException exception) {
+                    result = CommandResult.error(exception.getMessage());
+                }
                 metrics.recordLatency("commands.latency", Duration.ofNanos(System.nanoTime() - started));
                 responses.accept(encoder.encode(result));
             }
