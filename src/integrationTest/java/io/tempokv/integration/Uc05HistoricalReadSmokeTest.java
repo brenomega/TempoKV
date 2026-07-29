@@ -14,11 +14,11 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/** Smoke-tests UC-05 by reading a retained value through the public RESP endpoint. */
+/** Smoke-tests UC-05 by reading a retained value through both public protocol endpoints. */
 class Uc05HistoricalReadSmokeTest {
     @TempDir Path temporaryDirectory;
 
-    /** Returns the historical value selected by version without changing the current value. */
+    /** Returns the same historical value through RESP and SQL without changing the current value. */
     @Test
     void smokeTestReadsValueAtRetainedVersion() throws Exception {
         try (ServerFixture fixture = ServerFixture.start(temporaryDirectory); Socket client = fixture.client()) {
@@ -27,6 +27,13 @@ class Uc05HistoricalReadSmokeTest {
             client.getOutputStream().flush();
             InputStream input = client.getInputStream();
             assertEquals("+OK\r\n+OK\r\n$5\r\nfirst\r\n$6\r\nsecond\r\n", readExactly(input, 33));
+
+            try (SqlTestClient sql = SqlTestClient.connect(fixture.server)) {
+                sql.send(
+                        "SELECT value FROM tempokv AS OF VERSION 1 "
+                                + "WHERE key = 'profile';");
+                assertEquals("value\nfirst\n\n", sql.readResponse());
+            }
         }
     }
 
@@ -66,6 +73,7 @@ class Uc05HistoricalReadSmokeTest {
     static final class ServerFixture implements AutoCloseable {
         private final TempoKvServer server;
         private ServerFixture(TempoKvServer server) { this.server = server; }
+        TempoKvServer server() { return server; }
         static ServerFixture start(Path directory) throws Exception {
             return start(directory, "PT720H");
         }

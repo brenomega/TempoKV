@@ -21,6 +21,7 @@ import io.tempokv.persistence.SnapshotWriter;
 import io.tempokv.persistence.WalCompactor;
 import io.tempokv.persistence.WriteAheadLog;
 import io.tempokv.server.RespServer;
+import io.tempokv.server.SqlServer;
 import io.tempokv.storage.HistoryGarbageCollector;
 import io.tempokv.storage.MvccStore;
 import io.tempokv.storage.ExpirationWorker;
@@ -58,6 +59,7 @@ public final class TempoKvServer implements AutoCloseable {
     private final HistoryGarbageCollector garbageCollector;
     private final Clock clock;
     private RespServer respServer;
+    private SqlServer sqlServer;
     private boolean started;
 
     /** Creates a server from already-constructed infrastructure dependencies. */
@@ -120,7 +122,7 @@ public final class TempoKvServer implements AutoCloseable {
                                 garbageCollector)));
     }
 
-    /** Acquires infrastructure resources, starts the RESP endpoint, and publishes readiness. */
+    /** Acquires infrastructure resources, starts both protocol endpoints, and publishes readiness. */
     public synchronized void start() throws IOException {
         if (started) {
             return;
@@ -141,6 +143,9 @@ public final class TempoKvServer implements AutoCloseable {
             respServer = new RespServer(
                     configuration.respPort(), metrics, dispatcher);
             respServer.start();
+            sqlServer = new SqlServer(
+                    configuration.sqlPort(), metrics, dispatcher);
+            sqlServer.start();
             expirationWorker.start();
             started = true;
             metrics.incrementCounter("server.starts");
@@ -164,11 +169,21 @@ public final class TempoKvServer implements AutoCloseable {
         healthService.markStopping();
         metrics.setGauge("server.ready", 0);
         IOException failure = null;
+        if (sqlServer != null) {
+            try {
+                sqlServer.close();
+            } catch (IOException exception) {
+                failure = exception;
+            } finally {
+                sqlServer = null;
+            }
+        }
         if (respServer != null) {
             try {
                 respServer.close();
             } catch (IOException exception) {
-                failure = exception;
+                if (failure == null) failure = exception;
+                else failure.addSuppressed(exception);
             } finally {
                 respServer = null;
             }
@@ -203,9 +218,10 @@ public final class TempoKvServer implements AutoCloseable {
     /** Returns the currently observable node health. */
     public synchronized HealthStatus health() {
         if (started
-                && (respServer == null || !respServer.isRunning())
+                && (respServer == null || !respServer.isRunning()
+                    || sqlServer == null || !sqlServer.isRunning())
                 && healthService.currentHealth().state() != ServerHealth.STOPPING) {
-            healthService.markDegraded("RESP event loop is not running");
+            healthService.markDegraded("A protocol event loop is not running");
             metrics.setGauge("server.ready", 0);
         }
         return healthService.currentHealth();
@@ -223,7 +239,12 @@ public final class TempoKvServer implements AutoCloseable {
 
     /** Returns whether the E1 lifecycle currently owns its data-directory lock. */
     public synchronized boolean isRunning() {
-        return started && databaseLock.isHeld() && respServer != null && respServer.isRunning();
+        return started
+                && databaseLock.isHeld()
+                && respServer != null
+                && respServer.isRunning()
+                && sqlServer != null
+                && sqlServer.isRunning();
     }
 
     /** Returns the bound RESP port after the server becomes ready. */
@@ -232,6 +253,14 @@ public final class TempoKvServer implements AutoCloseable {
             throw new IOException("RESP server is not started");
         }
         return respServer.port();
+    }
+
+    /** Returns the bound SQL port after the server becomes ready. */
+    public synchronized int sqlPort() throws IOException {
+        if (sqlServer == null) {
+            throw new IOException("SQL server is not started");
+        }
+        return sqlServer.port();
     }
 
     /**
@@ -272,6 +301,15 @@ public final class TempoKvServer implements AutoCloseable {
 
     /** Attempts every startup cleanup step while preserving the original failure. */
     private void closeResources(Throwable failure) {
+        if (sqlServer != null) {
+            try {
+                sqlServer.close();
+            } catch (IOException closeFailure) {
+                failure.addSuppressed(closeFailure);
+            } finally {
+                sqlServer = null;
+            }
+        }
         if (respServer != null) {
             try {
                 respServer.close();

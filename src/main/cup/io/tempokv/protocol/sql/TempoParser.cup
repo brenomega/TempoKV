@@ -1,0 +1,222 @@
+package io.tempokv.protocol.sql;
+
+import java_cup.runtime.Symbol;
+import java.util.ArrayList;
+import java.util.List;
+
+parser code {:
+    /**
+     * Parses exactly one SQL statement and returns its immutable syntax tree.
+     *
+     * @return the parsed statement
+     * @throws SqlException when the token stream is not valid TempoKV SQL
+     */
+    public Statement parseStatement() {
+        try {
+            return (Statement) parse().value;
+        } catch (SqlException exception) {
+            throw exception;
+        } catch (IllegalArgumentException exception) {
+            throw new SqlException(
+                    SqlException.Kind.SEMANTIC,
+                    exception.getMessage());
+        } catch (ArithmeticException exception) {
+            throw new SqlException(
+                    SqlException.Kind.SEMANTIC,
+                    "numeric clause is out of range");
+        } catch (Exception exception) {
+            throw new SqlException(
+                    SqlException.Kind.SYNTAX,
+                    "could not parse statement");
+        }
+    }
+
+    @Override
+    public void syntax_error(Symbol token) {
+        String lexeme = token == null || token.sym == SqlSymbols.EOF
+                ? "end of input"
+                : "'" + String.valueOf(token.value) + "'";
+        int line = token == null ? 0 : Math.max(token.left, 0);
+        int column = token == null ? 0 : Math.max(token.right, 0);
+        throw new SqlException(
+                SqlException.Kind.SYNTAX,
+                "unexpected token " + lexeme,
+                line,
+                column);
+    }
+
+    @Override
+    public void unrecovered_syntax_error(Symbol token) {
+        syntax_error(token);
+    }
+:};
+
+terminal SELECT, FROM, WHERE, UPSERT, INTO, VALUES, DELETE;
+terminal AS, OF, HISTORY, DIFF, RESTORE, TO, BETWEEN, AND;
+terminal ORDER, BY, LIMIT, OFFSET, ASC, DESC;
+terminal BEGIN, COMMIT, ROLLBACK;
+terminal String VERSION, TIMESTAMP, KEY, VALUE, STATE, COMMITTED_AT;
+terminal LPAREN, RPAREN, COMMA, SEMICOLON, STAR, EQ, GTE;
+terminal String IDENT, STRING;
+terminal Long INTEGER;
+
+non terminal Statement input, statement;
+non terminal List projection, identifier_list, literal_list;
+non terminal String identifier;
+non terminal Expression.KeyPredicate optional_key_predicate, key_predicate;
+non terminal Expression.VersionPredicate history_predicate_opt;
+non terminal Expression.TemporalPoint as_of_opt, temporal_point;
+non terminal Statement.Order order_opt;
+non terminal Statement.Order.Direction direction;
+non terminal Integer limit_opt, offset_opt;
+non terminal Object optional_semicolon;
+
+start with input;
+
+input ::= statement:s optional_semicolon
+          {: RESULT = s; :}
+        ;
+
+optional_semicolon ::= SEMICOLON
+                       {: RESULT = null; :}
+                     |
+                       {: RESULT = null; :}
+                     ;
+
+statement ::= SELECT projection:p FROM identifier:t as_of_opt:a optional_key_predicate:k
+              {: RESULT = new Statement.Select(p, t, k, a); :}
+            | UPSERT INTO identifier:t LPAREN identifier_list:c RPAREN
+              VALUES LPAREN literal_list:v RPAREN
+              {: RESULT = new Statement.Upsert(t, c, v); :}
+            | DELETE FROM identifier:t optional_key_predicate:k
+              {: RESULT = new Statement.Delete(t, k); :}
+            | SELECT projection:p FROM HISTORY LPAREN STRING:k RPAREN
+              history_predicate_opt:w order_opt:r limit_opt:l offset_opt:o
+              {: RESULT = new Statement.History(
+                       p,
+                       new Expression.StringLiteral(k),
+                       w,
+                       r,
+                       l,
+                       o); :}
+            | HISTORY STRING:k limit_opt:l offset_opt:o
+              {: RESULT = new Statement.History(
+                       List.of(
+                           new Expression.Column("version"),
+                           new Expression.Column("committed_at"),
+                           new Expression.Column("state"),
+                           new Expression.Column("value")),
+                       new Expression.StringLiteral(k),
+                       null,
+                       Statement.Order.newestFirst(),
+                       l,
+                       o); :}
+            | DIFF STRING:k BETWEEN temporal_point:a AND temporal_point:b
+              {: RESULT = new Statement.Diff(
+                       new Expression.StringLiteral(k), a, b); :}
+            | RESTORE STRING:k TO VERSION INTEGER:v
+              {: RESULT = new Statement.Restore(
+                       new Expression.StringLiteral(k), v); :}
+            | BEGIN
+              {: RESULT = new Statement.TransactionControl(
+                       Statement.TransactionControl.Kind.BEGIN); :}
+            | COMMIT
+              {: RESULT = new Statement.TransactionControl(
+                       Statement.TransactionControl.Kind.COMMIT); :}
+            | ROLLBACK
+              {: RESULT = new Statement.TransactionControl(
+                       Statement.TransactionControl.Kind.ROLLBACK); :}
+            ;
+
+projection ::= STAR
+               {: RESULT = List.of(new Expression.Column("*")); :}
+             | identifier_list:l
+               {: RESULT = l; :}
+             ;
+
+identifier_list ::= identifier:i
+                    {: RESULT = new ArrayList(
+                         List.of(new Expression.Column(i))); :}
+                  | identifier_list:l COMMA identifier:i
+                    {: l.add(new Expression.Column(i)); RESULT = l; :}
+                  ;
+
+literal_list ::= STRING:s
+                 {: RESULT = new ArrayList(
+                      List.of(new Expression.StringLiteral(s))); :}
+               | literal_list:l COMMA STRING:s
+                 {: l.add(new Expression.StringLiteral(s)); RESULT = l; :}
+               ;
+
+identifier ::= IDENT:i
+               {: RESULT = i; :}
+             | KEY:k
+               {: RESULT = k; :}
+             | VALUE:v
+               {: RESULT = v; :}
+             | VERSION:v
+               {: RESULT = v; :}
+             | TIMESTAMP:t
+               {: RESULT = t; :}
+             | STATE:s
+               {: RESULT = s; :}
+             | COMMITTED_AT:c
+               {: RESULT = c; :}
+             ;
+
+optional_key_predicate ::= key_predicate:k
+                           {: RESULT = k; :}
+                         |
+                           {: RESULT = null; :}
+                         ;
+
+key_predicate ::= WHERE identifier:c EQ STRING:v
+                  {: RESULT = new Expression.KeyPredicate(
+                       new Expression.Column(c),
+                       new Expression.StringLiteral(v)); :}
+                ;
+
+as_of_opt ::= AS OF temporal_point:p
+              {: RESULT = p; :}
+            |
+              {: RESULT = null; :}
+            ;
+
+temporal_point ::= VERSION INTEGER:v
+                   {: RESULT = Expression.TemporalPoint.version(v); :}
+                 | TIMESTAMP STRING:t
+                   {: RESULT = Expression.TemporalPoint.timestamp(t); :}
+                 ;
+
+history_predicate_opt ::= WHERE identifier:c GTE INTEGER:v
+                          {: RESULT = new Expression.VersionPredicate(
+                               new Expression.Column(c),
+                               new Expression.LongLiteral(v)); :}
+                        |
+                          {: RESULT = null; :}
+                        ;
+
+order_opt ::= ORDER BY identifier:c direction:d
+              {: RESULT = new Statement.Order(
+                   new Expression.Column(c), d); :}
+            |
+              {: RESULT = Statement.Order.newestFirst(); :}
+            ;
+
+direction ::= ASC
+              {: RESULT = Statement.Order.Direction.ASC; :}
+            | DESC
+              {: RESULT = Statement.Order.Direction.DESC; :}
+            ;
+
+limit_opt ::= LIMIT INTEGER:v
+              {: RESULT = Math.toIntExact(v); :}
+            |
+              {: RESULT = 100; :}
+            ;
+
+offset_opt ::= OFFSET INTEGER:v
+               {: RESULT = Math.toIntExact(v); :}
+             |
+               {: RESULT = 0; :}
+             ;

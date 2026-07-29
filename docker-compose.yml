@@ -8,6 +8,7 @@ services:
       TEMPOKV_PERSISTENCE_ENABLED: "true"
     ports:
       - "127.0.0.1:6379:6379"
+      - "127.0.0.1:6380:6380"
     volumes:
       - tempokv-data:/data
     stop_grace_period: 15s

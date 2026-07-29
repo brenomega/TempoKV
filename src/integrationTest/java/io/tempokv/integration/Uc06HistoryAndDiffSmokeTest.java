@@ -11,7 +11,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/** Smoke-tests UC-06 by inspecting retained history and comparing two versions over RESP. */
+/** Smoke-tests UC-06 by inspecting retained history and comparing versions over RESP and SQL. */
 class Uc06HistoryAndDiffSmokeTest {
     @TempDir Path temporaryDirectory;
 
@@ -29,6 +29,20 @@ class Uc06HistoryAndDiffSmokeTest {
             assertEquals(
                     List.of("VALUE", "VALUE", 0L, "first", "second"),
                     input.read());
+
+            try (SqlTestClient sql = SqlTestClient.connect(fixture.server())) {
+                sql.send(
+                        "SELECT version, value FROM HISTORY('profile') "
+                                + "ORDER BY version ASC LIMIT 2;"
+                                + "DIFF 'profile' BETWEEN VERSION 1 AND VERSION 2;");
+                assertEquals(
+                        "version\tvalue\n1\tfirst\n2\tsecond\n\n",
+                        sql.readResponse());
+                assertEquals(
+                        "before_state\tafter_state\tcommon_prefix\tbefore_suffix\tafter_suffix\n"
+                                + "VALUE\tVALUE\t0\tfirst\tsecond\n\n",
+                        sql.readResponse());
+            }
         }
     }
 

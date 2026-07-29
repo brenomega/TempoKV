@@ -1,3 +1,4 @@
+import org.gradle.api.tasks.JavaExec
 import org.gradle.testing.jacoco.tasks.JacocoReport
 
 plugins {
@@ -13,6 +14,13 @@ repositories {
     mavenCentral()
 }
 
+val jflex by configurations.creating
+val javaCup by configurations.creating
+val generatedSqlLexerSources =
+    layout.buildDirectory.dir("generated/sources/sql/lexer")
+val generatedSqlParserSources =
+    layout.buildDirectory.dir("generated/sources/sql/parser")
+
 java {
     toolchain {
         languageVersion.set(JavaLanguageVersion.of(25))
@@ -24,9 +32,59 @@ application {
 }
 
 dependencies {
+    implementation("com.github.vbmacher:java-cup-runtime:11b-20160615")
+    jflex("de.jflex:jflex:1.9.1")
+    javaCup("com.github.vbmacher:java-cup:11b-20160615")
+
     testImplementation(platform("org.junit:junit-bom:5.12.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+sourceSets.main {
+    java.srcDir(generatedSqlLexerSources)
+    java.srcDir(generatedSqlParserSources)
+}
+
+val generateSqlLexer = tasks.register<JavaExec>("generateSqlLexer") {
+    description = "Generates the TempoKV SQL lexer from its JFlex specification."
+    group = "build"
+    classpath = jflex
+    mainClass.set("jflex.Main")
+    val specification = layout.projectDirectory.file(
+        "src/main/jflex/io/tempokv/protocol/sql/TempoLexer.flex")
+    inputs.file(specification)
+    outputs.dir(generatedSqlLexerSources)
+    doFirst {
+        generatedSqlLexerSources.get().asFile.mkdirs()
+    }
+    args(
+        "--quiet",
+        "-d", generatedSqlLexerSources.get().asFile.absolutePath,
+        specification.asFile.absolutePath)
+}
+
+val generateSqlParser = tasks.register<JavaExec>("generateSqlParser") {
+    description = "Generates the TempoKV SQL parser from its Java CUP grammar."
+    group = "build"
+    classpath = javaCup
+    mainClass.set("java_cup.Main")
+    val specification = layout.projectDirectory.file(
+        "src/main/cup/io/tempokv/protocol/sql/TempoParser.cup")
+    inputs.file(specification)
+    outputs.dir(generatedSqlParserSources)
+    doFirst {
+        generatedSqlParserSources.get().asFile.mkdirs()
+    }
+    args(
+        "-destdir", generatedSqlParserSources.get().asFile.absolutePath,
+        "-parser", "TempoParser",
+        "-symbols", "SqlSymbols",
+        specification.asFile.absolutePath)
+}
+
+tasks.compileJava {
+    dependsOn(generateSqlLexer, generateSqlParser)
 }
 
 val integrationTest by sourceSets.creating {
@@ -76,6 +134,10 @@ tasks.register<JacocoReport>("jacocoAllReport") {
 }
 
 tasks.jar {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from(configurations.runtimeClasspath.get().map {
+        if (it.isDirectory) it else zipTree(it)
+    })
     manifest {
         attributes["Main-Class"] = application.mainClass.get()
     }

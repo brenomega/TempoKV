@@ -9,18 +9,29 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/** Smoke-tests UC-07 by restoring a retained value as a new append-only version. */
+/** Smoke-tests UC-07 by restoring through SQL and observing the result through RESP. */
 class Uc07RestoreHistoricalVersionSmokeTest {
     @TempDir Path temporaryDirectory;
 
-    /** Makes the old value current while preserving the newer value for historical reads. */
+    /** Makes an old value current through SQL while preserving it durably as an append-only commit. */
     @Test
     void smokeTestRestoresHistoricalValueWithoutRemovingNewerVersion() throws Exception {
         try (Uc05HistoricalReadSmokeTest.ServerFixture fixture = Uc05HistoricalReadSmokeTest.ServerFixture.start(temporaryDirectory); Socket client = fixture.client()) {
             client.getOutputStream().write((request("SET", "profile", "first") + request("SET", "profile", "second")
-                    + request("RESTOREAT", "profile", "1") + request("GET", "profile") + request("GETAT", "profile", "VERSION", "2")).getBytes(StandardCharsets.UTF_8));
+                    ).getBytes(StandardCharsets.UTF_8));
             client.getOutputStream().flush();
-            String expected = "+OK\r\n+OK\r\n:3\r\n$5\r\nfirst\r\n$6\r\nsecond\r\n";
+            String writes = "+OK\r\n+OK\r\n";
+            assertEquals(writes, readExactly(client.getInputStream(), writes.getBytes(StandardCharsets.UTF_8).length));
+
+            try (SqlTestClient sql = SqlTestClient.connect(fixture.server())) {
+                sql.send("RESTORE 'profile' TO VERSION 1;");
+                assertEquals("version\n3\n\n", sql.readResponse());
+            }
+
+            client.getOutputStream().write((request("GET", "profile")
+                    + request("GETAT", "profile", "VERSION", "2")).getBytes(StandardCharsets.UTF_8));
+            client.getOutputStream().flush();
+            String expected = "$5\r\nfirst\r\n$6\r\nsecond\r\n";
             assertEquals(expected, readExactly(client.getInputStream(), expected.getBytes(StandardCharsets.UTF_8).length));
         }
         try (Uc05HistoricalReadSmokeTest.ServerFixture fixture =

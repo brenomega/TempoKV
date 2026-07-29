@@ -8,7 +8,7 @@ import java.util.Objects;
 import java.util.Queue;
 import java.util.function.Consumer;
 
-/** Owns per-client read buffering and queued non-blocking RESP writes. */
+/** Owns protocol-neutral per-client read buffering and queued non-blocking writes. */
 public final class ClientConnection {
     private static final int DEFAULT_MAX_PENDING_WRITE_BYTES = 32 * 1024 * 1024;
     private final SocketChannel channel;
