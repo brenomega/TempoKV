@@ -19,12 +19,26 @@ services:
       - "127.0.0.1:6380:6380"
     volumes:
       - tempokv-primary-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - java
+        - -cp
+        - /opt/tempokv/app.jar
+        - io.tempokv.bootstrap.RespHealthProbe
+        - 127.0.0.1
+        - "6379"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
     stop_grace_period: 15s
 
   replica:
     image: tempokv:local
     depends_on:
-      - primary
+      primary:
+        condition: service_healthy
     environment:
       TEMPOKV_DATA_DIR: /data
       TEMPOKV_PERSISTENCE_ENABLED: "true"

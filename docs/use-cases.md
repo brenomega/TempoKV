@@ -5,7 +5,7 @@
 | Target architecture: single-node server in Java 25, distributed by JAR and Docker, with Java NIO, MVCC storage, WAL, SQL via JFlex/CUP and primary-replica replication. |
 |--------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 
-Architectural version 1.0 • Document consistent with the other artifacts in the series
+This document describes the behavior of TempoKV 0.1.0.
 
 # 1. Scope and conventions
 

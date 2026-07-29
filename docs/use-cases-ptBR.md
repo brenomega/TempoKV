@@ -5,7 +5,7 @@
 | Arquitetura-alvo: servidor single-node em Java 25, distribuído por JAR e Docker, com Java NIO, storage MVCC, WAL, SQL via JFlex/CUP e replicação primário-réplica. |
 |--------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 
-Versão arquitetural 1.0 • Documento consistente com os demais artefatos da série
+Este documento descreve o comportamento do TempoKV 0.1.0.
 
 # 1. Escopo e convenções
 

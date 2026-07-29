@@ -78,6 +78,7 @@ diretamente ao [livro de receitas de comandos](docs/command-cookbook-ptBR.md).
 - [Livro de receitas de comandos](docs/command-cookbook-ptBR.md)
 - [Casos de uso](docs/use-cases-ptBR.md)
 - [Diagrama de classes conceitual](docs/class-diagram-ptBR.md)
+- [Referência de configuração](docs/configuration-ptBR.md)
 - [Resultados de performance, profiling e benchmarks](docs/performance-ptBR.md)
 - [Guia da infraestrutura de benchmarks](benchmarks/README-ptBR.md)
 

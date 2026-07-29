@@ -76,6 +76,7 @@ to the [command cookbook](docs/command-cookbook.md).
 - [Command cookbook](docs/command-cookbook.md)
 - [Use cases](docs/use-cases.md)
 - [Conceptual class diagram](docs/class-diagram.md)
+- [Configuration reference](docs/configuration.md)
 - [Performance, profiling, and benchmark results](docs/performance.md)
 - [Benchmark harness guide](benchmarks/README.md)
 
