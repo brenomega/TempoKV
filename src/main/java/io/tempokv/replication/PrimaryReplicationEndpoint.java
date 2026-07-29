@@ -19,6 +19,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.time.Duration;
 
 /**
  * Accepts authenticated replica connections and streams a gap-free snapshot/WAL sequence.
@@ -30,14 +31,12 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
     static final byte COMMIT = 2;
     static final byte CAUGHT_UP = 3;
     static final byte ERROR = 4;
-    static final int MAX_FRAME_BYTES = 128 * 1024 * 1024;
-    private static final int MAX_REPLICA_CONNECTIONS = 64;
-    private static final int MAX_PENDING_COMMITS = 1_024;
-    private static final long MAX_PENDING_COMMIT_BYTES = 64L * 1024 * 1024;
-    private static final int REPLICA_SOCKET_TIMEOUT_MILLIS = 15_000;
+    static final byte HEARTBEAT = 5;
+    static final long HEARTBEAT_ACK = Long.MIN_VALUE;
     private static final int MAX_REPLICA_ID_BYTES = 128;
 
     private final int configuredPort;
+    private final String bindAddress;
     private final String token;
     private final CommitCoordinator commits;
     private final SyncCoordinator synchronizer;
@@ -45,9 +44,17 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
     private final WalRecordCodec walCodec;
     private final AckTracker acknowledgements;
     private final MetricsRegistry metrics;
+    private final int maxReplicaConnections;
+    private final int maxPendingCommits;
+    private final long maxPendingCommitBytes;
+    private final int maxFrameBytes;
+    private final Duration heartbeatInterval;
+    private final Duration heartbeatTimeout;
+    private final Duration synchronizationTimeout;
     private final ConcurrentHashMap<String, Subscription> subscriptions =
             new ConcurrentHashMap<>();
     private final Set<Socket> sockets = ConcurrentHashMap.newKeySet();
+    private final Set<Thread> sessionThreads = ConcurrentHashMap.newKeySet();
     private volatile ServerSocket serverSocket;
     private volatile Thread acceptThread;
     private volatile boolean running;
@@ -61,13 +68,60 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
             SnapshotStore snapshots,
             AckTracker acknowledgements,
             MetricsRegistry metrics) {
+        this(
+                port,
+                "127.0.0.1",
+                token,
+                commits,
+                synchronizer,
+                snapshots,
+                acknowledgements,
+                metrics,
+                64,
+                1_024,
+                64L * 1_048_576,
+                64L * 1_048_576,
+                Duration.ofSeconds(15),
+                Duration.ofSeconds(5),
+                Duration.ofSeconds(15));
+    }
+
+    /** Creates an endpoint with explicit bind, queue, frame, and heartbeat limits. */
+    public PrimaryReplicationEndpoint(
+            int port,
+            String bindAddress,
+            String token,
+            CommitCoordinator commits,
+            SyncCoordinator synchronizer,
+            SnapshotStore snapshots,
+            AckTracker acknowledgements,
+            MetricsRegistry metrics,
+            int maxReplicaConnections,
+            int maxPendingCommits,
+            long maxPendingCommitBytes,
+            long maxSnapshotBytes,
+            Duration synchronizationTimeout,
+            Duration heartbeatInterval,
+            Duration heartbeatTimeout) {
         this.configuredPort = port;
+        this.bindAddress = Objects.requireNonNull(bindAddress, "bindAddress");
         this.token = Objects.requireNonNull(token, "token");
         this.commits = Objects.requireNonNull(commits, "commits");
         this.synchronizer = Objects.requireNonNull(synchronizer, "synchronizer");
         this.snapshots = Objects.requireNonNull(snapshots, "snapshots");
         this.acknowledgements = Objects.requireNonNull(acknowledgements, "acknowledgements");
         this.metrics = Objects.requireNonNull(metrics, "metrics");
+        this.maxReplicaConnections = maxReplicaConnections;
+        this.maxPendingCommits = maxPendingCommits;
+        this.maxPendingCommitBytes = maxPendingCommitBytes;
+        this.maxFrameBytes = Math.toIntExact(maxSnapshotBytes + 14L);
+        this.heartbeatInterval =
+                Objects.requireNonNull(heartbeatInterval, "heartbeatInterval");
+        this.heartbeatTimeout =
+                Objects.requireNonNull(heartbeatTimeout, "heartbeatTimeout");
+        this.synchronizationTimeout =
+                Objects.requireNonNull(
+                        synchronizationTimeout, "synchronizationTimeout");
         this.walCodec = new WalRecordCodec();
     }
 
@@ -76,7 +130,8 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
         if (running) return;
         ServerSocket socket = new ServerSocket();
         socket.setReuseAddress(true);
-        socket.bind(new java.net.InetSocketAddress(configuredPort));
+        socket.bind(new java.net.InetSocketAddress(
+                bindAddress, configuredPort));
         serverSocket = socket;
         running = true;
         acceptThread = Thread.ofPlatform()
@@ -117,18 +172,21 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
             try {
                 Socket socket = serverSocket.accept();
                 socket.setTcpNoDelay(true);
-                socket.setSoTimeout(REPLICA_SOCKET_TIMEOUT_MILLIS);
-                if (sockets.size() >= MAX_REPLICA_CONNECTIONS) {
+                socket.setSoTimeout(Math.toIntExact(
+                        synchronizationTimeout.toMillis()));
+                if (sockets.size() >= maxReplicaConnections) {
                     metrics.incrementCounter(
                             "replication.connection_rejections");
                     socket.close();
                     continue;
                 }
                 sockets.add(socket);
-                Thread.ofPlatform()
+                Thread session = Thread.ofPlatform()
                         .daemon(true)
                         .name("tempokv-replica-session")
-                        .start(() -> serve(socket));
+                        .unstarted(() -> serve(socket));
+                sessionThreads.add(session);
+                session.start();
             } catch (IOException failure) {
                 if (running) metrics.incrementCounter("replication.accept_failures");
             }
@@ -153,8 +211,9 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
                                 new Subscription(
                                         handshake.replicaId(),
                                         new ArrayBlockingQueue<>(
-                                                MAX_PENDING_COMMITS),
-                                        socket);
+                                                maxPendingCommits),
+                                        socket,
+                                        maxPendingCommitBytes);
                         Subscription replaced =
                                 subscriptions.put(handshake.replicaId(), created);
                         if (replaced != null) replaced.close();
@@ -173,19 +232,29 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
             subscription = initial.subscription();
             sendInitial(initial.plan(), input, output, replicaId);
             writeCaughtUp(output, initial.plan().primaryVersion());
+            socket.setSoTimeout(Math.toIntExact(
+                    heartbeatTimeout.toMillis()));
             while (running && !subscription.closed()) {
                 CommitRecord record =
-                        subscription.poll(500, TimeUnit.MILLISECONDS);
-                if (record == null) continue;
-                writeFrame(output, COMMIT, walCodec.encode(record));
-                readAcknowledgement(input, replicaId, record.version());
-                subscription.complete(record);
+                        subscription.poll(
+                                heartbeatInterval.toMillis(),
+                                TimeUnit.MILLISECONDS);
+                if (record == null) {
+                    writeHeartbeat(output);
+                    readHeartbeatAcknowledgement(input);
+                    metrics.incrementCounter("replication.heartbeats");
+                } else {
+                    writeFrame(output, COMMIT, walCodec.encode(record));
+                    readAcknowledgement(input, replicaId, record.version());
+                    subscription.complete(record);
+                }
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
         } catch (IOException | RuntimeException failure) {
             if (running) metrics.incrementCounter("replication.session_failures");
         } finally {
+            sessionThreads.remove(Thread.currentThread());
             sockets.remove(socket);
             if (replicaId != null && subscription != null
                     && subscriptions.remove(replicaId, subscription)) {
@@ -245,12 +314,28 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
         metrics.incrementCounter("replication.acks");
     }
 
-    private static void writeFrame(
+    private void writeFrame(
             DataOutputStream output, byte messageType, byte[] payload) throws IOException {
+        if (payload.length > maxFrameBytes) {
+            throw new IOException("Replication frame exceeds configured limit");
+        }
         output.writeByte(messageType);
         output.writeInt(payload.length);
         output.write(payload);
         output.flush();
+    }
+
+    private static void writeHeartbeat(DataOutputStream output)
+            throws IOException {
+        output.writeByte(HEARTBEAT);
+        output.flush();
+    }
+
+    private static void readHeartbeatAcknowledgement(
+            DataInputStream input) throws IOException {
+        if (input.readLong() != HEARTBEAT_ACK) {
+            throw new IOException("Invalid replication heartbeat acknowledgement");
+        }
     }
 
     private static void writeCaughtUp(DataOutputStream output, long version) throws IOException {
@@ -296,6 +381,34 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
             }
         }
         sockets.clear();
+        java.util.List<Thread> sessions =
+                java.util.List.copyOf(sessionThreads);
+        sessions.forEach(Thread::interrupt);
+        Thread accepting = acceptThread;
+        acceptThread = null;
+        if (accepting != null) {
+            try {
+                accepting.join(5_000);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        long deadline = System.nanoTime()
+                + Duration.ofSeconds(5).toNanos();
+        for (Thread session : sessions) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) break;
+            try {
+                session.join(
+                        Math.max(
+                                1L,
+                                TimeUnit.NANOSECONDS.toMillis(remaining)));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        sessionThreads.clear();
         updateReplicaMetrics();
         if (failure != null) throw failure;
     }
@@ -307,24 +420,27 @@ public final class PrimaryReplicationEndpoint implements AutoCloseable {
             BlockingQueue<CommitRecord> records,
             Socket socket,
             java.util.concurrent.atomic.AtomicLong pendingBytes,
-            java.util.concurrent.atomic.AtomicBoolean flag) {
+            java.util.concurrent.atomic.AtomicBoolean flag,
+            long maximumPendingBytes) {
         Subscription(
                 String replicaId,
                 BlockingQueue<CommitRecord> records,
-                Socket socket) {
+                Socket socket,
+                long maximumPendingBytes) {
             this(
                     replicaId,
                     records,
                     socket,
                     new java.util.concurrent.atomic.AtomicLong(),
-                    new java.util.concurrent.atomic.AtomicBoolean());
+                    new java.util.concurrent.atomic.AtomicBoolean(),
+                    maximumPendingBytes);
         }
 
         boolean offer(CommitRecord record) {
             long recordBytes = estimatedBytes(record);
             while (true) {
                 long current = pendingBytes.get();
-                if (recordBytes > MAX_PENDING_COMMIT_BYTES - current) {
+                if (recordBytes > maximumPendingBytes - current) {
                     return false;
                 }
                 if (pendingBytes.compareAndSet(

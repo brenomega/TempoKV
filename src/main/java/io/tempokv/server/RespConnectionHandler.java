@@ -21,13 +21,37 @@ public final class RespConnectionHandler implements ClientConnection.ConnectionP
     private final AccessController accessController;
     private final CommandDispatcher dispatcher;
     private final MetricsRegistry metrics;
-    private final RespDecoder decoder = new RespDecoder();
-    private final RespCommandMapper mapper = new RespCommandMapper();
+    private final RespDecoder decoder;
+    private final RespCommandMapper mapper;
     private final RespEncoder encoder = new RespEncoder();
 
     /** Creates a handler and authenticates its newly allocated session. */
     public RespConnectionHandler(Authenticator authenticator, AccessController accessController, CommandDispatcher dispatcher, MetricsRegistry metrics) {
+        this(
+                authenticator,
+                accessController,
+                dispatcher,
+                metrics,
+                1_024,
+                16 * 1_048_576,
+                128,
+                4_096);
+    }
+
+    /** Creates a handler with configured protocol and credential limits. */
+    public RespConnectionHandler(
+            Authenticator authenticator,
+            AccessController accessController,
+            CommandDispatcher dispatcher,
+            MetricsRegistry metrics,
+            int maxArrayElements,
+            int maxCommandBytes,
+            int maxUsernameBytes,
+            int maxCredentialBytes) {
         this.authenticator = Objects.requireNonNull(authenticator, "authenticator"); this.accessController = Objects.requireNonNull(accessController, "accessController"); this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher"); this.metrics = Objects.requireNonNull(metrics, "metrics"); this.authenticator.authenticate(session);
+        this.decoder = new RespDecoder(maxCommandBytes, maxArrayElements);
+        this.mapper = new RespCommandMapper(
+                maxUsernameBytes, maxCredentialBytes);
     }
 
     /** Decodes all complete requests in a chunk and emits their responses in order. */

@@ -62,7 +62,8 @@ class Uc03KeyValueSmokeTest {
         return TempoKvApplication.bootstrap(new String[]{
                 "--data-dir=" + directory.resolve("data"),
                 "--resp-port=0", "--sql-port=0",
-                "--persistence-enabled=true"
+                "--persistence-enabled=true",
+                "--authentication-enabled=false"
         }, Map.of());
     }
 

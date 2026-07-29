@@ -35,7 +35,7 @@ class Uc01DurableRecoverySmokeTest {
             org.junit.jupiter.api.Assertions.assertTrue(ttl > 0 && ttl <= 60);
         } finally { restarted.close(); }
     }
-    private TempoKvServer start() throws Exception { return TempoKvApplication.bootstrap(new String[]{"--data-dir=" + directory.resolve("data"), "--resp-port=0", "--sql-port=0", "--persistence-enabled=true"}, Map.of()); }
+    private TempoKvServer start() throws Exception { return TempoKvApplication.bootstrap(new String[]{"--data-dir=" + directory.resolve("data"), "--resp-port=0", "--sql-port=0", "--persistence-enabled=true", "--authentication-enabled=false"}, Map.of()); }
     private static void send(Socket socket, String... arguments) throws Exception { StringBuilder value = new StringBuilder("*").append(arguments.length).append("\r\n"); for (String argument : arguments) value.append('$').append(argument.length()).append("\r\n").append(argument).append("\r\n"); socket.getOutputStream().write(value.toString().getBytes(StandardCharsets.UTF_8)); socket.getOutputStream().flush(); }
     private static String read(Socket socket, int length) throws Exception { return new String(socket.getInputStream().readNBytes(length), StandardCharsets.UTF_8); }
     private static String readLine(Socket socket) throws Exception {

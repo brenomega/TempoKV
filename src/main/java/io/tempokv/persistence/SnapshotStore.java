@@ -9,8 +9,10 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -29,40 +31,56 @@ import java.util.zip.CRC32;
 public final class SnapshotStore {
     private static final int MAGIC = 0x544B5350;
     private static final short FORMAT_VERSION = 1;
-    private static final int MAX_FIELD_BYTES = 64 * 1024 * 1024;
-    private static final long MAX_ENCODED_BYTES =
-            MAX_FIELD_BYTES + 4L + 2L + 4L + 4L;
     private static final String SUFFIX = ".snapshot";
     private final Path directory;
     private final FileSystemAdapter fileSystem;
+    private final int maxSnapshotBytes;
+    private final long maxEncodedBytes;
 
     /** Stores snapshots under the node data directory using injectable filesystem operations. */
     public SnapshotStore(Path dataDirectory, FileSystemAdapter fileSystem) {
+        this(dataDirectory, fileSystem, 64L * 1_048_576);
+    }
+
+    /** Stores snapshots with an explicit bounded payload size. */
+    public SnapshotStore(
+            Path dataDirectory,
+            FileSystemAdapter fileSystem,
+            long maxSnapshotBytes) {
         this.directory = Objects.requireNonNull(dataDirectory, "dataDirectory").resolve("snapshots");
         this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
+        if (maxSnapshotBytes < 1 || maxSnapshotBytes > Integer.MAX_VALUE - 14L) {
+            throw new IllegalArgumentException(
+                    "maxSnapshotBytes is outside the supported range");
+        }
+        this.maxSnapshotBytes = Math.toIntExact(maxSnapshotBytes);
+        this.maxEncodedBytes = maxSnapshotBytes + 14L;
     }
 
     /** Forces a complete temporary artifact before atomically publishing and validating it. */
     public synchronized void save(StorageSnapshot snapshot) throws IOException {
         Objects.requireNonNull(snapshot, "snapshot");
         fileSystem.createDirectories(directory);
-        byte[] encoded = encode(snapshot);
         Path target = path(snapshot.version());
         Path temporary = target.resolveSibling(target.getFileName() + ".tmp");
         fileSystem.deleteIfExists(temporary);
-        try (FileChannel channel = fileSystem.open(
-                temporary,
-                StandardOpenOption.CREATE_NEW,
-                StandardOpenOption.WRITE)) {
-            writeFully(channel, ByteBuffer.wrap(encoded));
-            fileSystem.force(channel);
+        try {
+            writeTemporary(snapshot, temporary);
+            StorageSnapshot validated = decode(readSnapshot(temporary));
+            if (validated.version() != snapshot.version()) {
+                throw new IOException(
+                        "Temporary snapshot cutoff changed during validation");
+            }
+            fileSystem.moveAtomically(temporary, target);
+            pruneOldSnapshots();
+        } catch (IOException | RuntimeException failure) {
+            try {
+                fileSystem.deleteIfExists(temporary);
+            } catch (IOException cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
         }
-        fileSystem.moveAtomically(temporary, target);
-        StorageSnapshot validated = decode(readSnapshot(target));
-        if (validated.version() != snapshot.version()) {
-            throw new IOException("Published snapshot cutoff changed during validation");
-        }
-        pruneOldSnapshots();
     }
 
     /**
@@ -116,44 +134,84 @@ public final class SnapshotStore {
     }
 
     private byte[] encode(StorageSnapshot snapshot) throws IOException {
-        ByteArrayOutputStream payloadBytes = new ByteArrayOutputStream();
-        try (DataOutputStream output = new DataOutputStream(payloadBytes)) {
-            output.writeLong(snapshot.version());
-            output.writeInt(snapshot.chains().size());
-            for (Map.Entry<String, VersionChain> entry : snapshot.chains().entrySet()) {
-                writeBytes(output, entry.getKey().getBytes(StandardCharsets.UTF_8));
-                StorageSnapshot.HistoryBoundary boundary =
-                        snapshot.boundaries().get(entry.getKey());
-                output.writeLong(boundary.firstVersion());
-                output.writeLong(boundary.firstCommittedAt().toEpochMilli());
-                output.writeBoolean(boundary.truncated());
-                output.writeInt(entry.getValue().versions().size());
-                for (VersionedValue version : entry.getValue().versions()) {
-                    writeVersion(output, version);
-                }
-            }
-            output.writeInt(snapshot.expirations().size());
-            for (TtlIndex.Entry entry : snapshot.expirations()) {
-                writeBytes(output, entry.key().getBytes(StandardCharsets.UTF_8));
-                output.writeLong(entry.version());
-                output.writeLong(entry.expiresAt().toEpochMilli());
-            }
-        }
-        byte[] payload = payloadBytes.toByteArray();
-        if (payload.length > MAX_FIELD_BYTES) {
-            throw new IOException("Snapshot payload exceeds 64 MiB");
-        }
-        CRC32 checksum = new CRC32();
-        checksum.update(payload);
-        ByteArrayOutputStream result = new ByteArrayOutputStream(payload.length + 18);
-        try (DataOutputStream output = new DataOutputStream(result)) {
+        SnapshotBuffer result = new SnapshotBuffer();
+        DataOutputStream output = new DataOutputStream(result);
+        try {
             output.writeInt(MAGIC);
             output.writeShort(FORMAT_VERSION);
-            output.writeInt(payload.length);
-            output.write(payload);
-            output.writeInt((int) checksum.getValue());
+            output.writeInt(0);
+            BoundedChecksumOutputStream bounded =
+                    new BoundedChecksumOutputStream(result, maxSnapshotBytes);
+            DataOutputStream payload = new DataOutputStream(bounded);
+            writePayload(payload, snapshot);
+            payload.flush();
+            output.writeInt((int) bounded.checksum());
+            output.flush();
+            result.putInt(6, bounded.count());
+            return result.toByteArray();
+        } catch (IOException failure) {
+            throw failure;
         }
-        return result.toByteArray();
+    }
+
+    private void writeTemporary(
+            StorageSnapshot snapshot, Path temporary) throws IOException {
+        try (FileChannel channel = fileSystem.open(
+                temporary,
+                StandardOpenOption.CREATE_NEW,
+                StandardOpenOption.WRITE)) {
+            DataOutputStream header =
+                    new DataOutputStream(Channels.newOutputStream(channel));
+            header.writeInt(MAGIC);
+            header.writeShort(FORMAT_VERSION);
+            header.writeInt(0);
+            header.flush();
+            BoundedChecksumOutputStream bounded =
+                    new BoundedChecksumOutputStream(
+                            Channels.newOutputStream(channel),
+                            maxSnapshotBytes);
+            DataOutputStream payload = new DataOutputStream(bounded);
+            writePayload(payload, snapshot);
+            payload.flush();
+            DataOutputStream trailer =
+                    new DataOutputStream(Channels.newOutputStream(channel));
+            trailer.writeInt((int) bounded.checksum());
+            trailer.flush();
+            channel.position(6);
+            writeFully(channel, ByteBuffer.allocate(Integer.BYTES)
+                    .putInt(bounded.count())
+                    .flip());
+            fileSystem.force(channel);
+        }
+    }
+
+    private static void writePayload(
+            DataOutputStream output, StorageSnapshot snapshot)
+            throws IOException {
+        output.writeLong(snapshot.version());
+        output.writeInt(snapshot.chains().size());
+        for (Map.Entry<String, VersionChain> entry
+                : snapshot.chains().entrySet()) {
+            writeBytes(
+                    output,
+                    entry.getKey().getBytes(StandardCharsets.UTF_8));
+            StorageSnapshot.HistoryBoundary boundary =
+                    snapshot.boundaries().get(entry.getKey());
+            output.writeLong(boundary.firstVersion());
+            output.writeLong(boundary.firstCommittedAt().toEpochMilli());
+            output.writeBoolean(boundary.truncated());
+            output.writeInt(entry.getValue().versions().size());
+            for (VersionedValue version : entry.getValue().versions()) {
+                writeVersion(output, version);
+            }
+        }
+        output.writeInt(snapshot.expirations().size());
+        for (TtlIndex.Entry entry : snapshot.expirations()) {
+            writeBytes(
+                    output, entry.key().getBytes(StandardCharsets.UTF_8));
+            output.writeLong(entry.version());
+            output.writeLong(entry.expiresAt().toEpochMilli());
+        }
     }
 
     private StorageSnapshot decode(byte[] encoded) throws IOException {
@@ -163,7 +221,8 @@ public final class SnapshotStore {
                 throw new IOException("Unsupported snapshot format version");
             }
             int length = input.readInt();
-            if (length < 0 || length > MAX_FIELD_BYTES || input.available() != length + Integer.BYTES) {
+            if (length < 0 || length > maxSnapshotBytes
+                    || input.available() != length + Integer.BYTES) {
                 throw new IOException("Invalid snapshot payload length");
             }
             byte[] payload = readExact(input, length);
@@ -231,7 +290,7 @@ public final class SnapshotStore {
     }
 
     private byte[] readSnapshot(Path path) throws IOException {
-        if (fileSystem.size(path) > MAX_ENCODED_BYTES) {
+        if (fileSystem.size(path) > maxEncodedBytes) {
             throw new IOException("Snapshot artifact exceeds maximum encoded size");
         }
         return fileSystem.readAllBytes(path);
@@ -255,7 +314,7 @@ public final class SnapshotStore {
         writeNullableBytes(output, value.value());
     }
 
-    private static VersionedValue readVersion(DataInputStream input) throws IOException {
+    private VersionedValue readVersion(DataInputStream input) throws IOException {
         long version = input.readLong();
         boolean tombstone = input.readBoolean();
         Instant committedAt = Instant.ofEpochMilli(input.readLong());
@@ -296,17 +355,17 @@ public final class SnapshotStore {
         output.write(value);
     }
 
-    private static byte[] readNullableBytes(DataInputStream input) throws IOException {
+    private byte[] readNullableBytes(DataInputStream input) throws IOException {
         int length = input.readInt();
         return length == -1 ? null : readSized(input, length);
     }
 
-    private static byte[] readBytes(DataInputStream input) throws IOException {
+    private byte[] readBytes(DataInputStream input) throws IOException {
         return readSized(input, input.readInt());
     }
 
-    private static byte[] readSized(DataInputStream input, int length) throws IOException {
-        if (length < 0 || length > MAX_FIELD_BYTES) {
+    private byte[] readSized(DataInputStream input, int length) throws IOException {
+        if (length < 0 || length > maxSnapshotBytes) {
             throw new IOException("Invalid snapshot field length");
         }
         return readExact(input, length);
@@ -326,6 +385,68 @@ public final class SnapshotStore {
             } else if (++zeroProgressWrites >= 16) {
                 throw new IOException("Snapshot write made no progress");
             }
+        }
+    }
+
+    private static final class BoundedChecksumOutputStream
+            extends OutputStream {
+        private final OutputStream delegate;
+        private final int maximum;
+        private final CRC32 checksum = new CRC32();
+        private int count;
+
+        private BoundedChecksumOutputStream(
+                OutputStream delegate, int maximum) {
+            this.delegate = Objects.requireNonNull(delegate, "delegate");
+            this.maximum = maximum;
+        }
+
+        @Override
+        public void write(int value) throws IOException {
+            ensureCapacity(1);
+            delegate.write(value);
+            checksum.update(value);
+            count++;
+        }
+
+        @Override
+        public void write(byte[] bytes, int offset, int length)
+                throws IOException {
+            Objects.checkFromIndexSize(offset, length, bytes.length);
+            ensureCapacity(length);
+            delegate.write(bytes, offset, length);
+            checksum.update(bytes, offset, length);
+            count += length;
+        }
+
+        @Override
+        public void flush() throws IOException {
+            delegate.flush();
+        }
+
+        private void ensureCapacity(int additional) throws IOException {
+            if (additional > maximum - count) {
+                throw new IOException(
+                        "Snapshot payload exceeds configured limit");
+            }
+        }
+
+        private int count() {
+            return count;
+        }
+
+        private long checksum() {
+            return checksum.getValue();
+        }
+    }
+
+    private static final class SnapshotBuffer
+            extends ByteArrayOutputStream {
+        private void putInt(int offset, int value) {
+            buf[offset] = (byte) (value >>> 24);
+            buf[offset + 1] = (byte) (value >>> 16);
+            buf[offset + 2] = (byte) (value >>> 8);
+            buf[offset + 3] = (byte) value;
         }
     }
 }

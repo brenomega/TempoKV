@@ -88,7 +88,9 @@ public final class TempoKvServer implements AutoCloseable {
                 metrics,
                 healthService,
                 configuration.authenticationEnabled()
-                        ? session -> { }
+                        ? Authenticator.users(Map.of(
+                                configuration.authenticationUsername(),
+                                configuration.authenticationPassword()))
                         : Authenticator.permissive(),
                 defaultAccessController(configuration));
     }
@@ -119,7 +121,10 @@ public final class TempoKvServer implements AutoCloseable {
             try {
                 FileSystemAdapter fileSystem = new FileSystemAdapter();
                 this.writeAheadLog = new FileWriteAheadLog(configuration.dataDirectory(), fileSystem, FsyncPolicy.ALWAYS);
-                this.snapshotStore = new SnapshotStore(configuration.dataDirectory(), fileSystem);
+                this.snapshotStore = new SnapshotStore(
+                        configuration.dataDirectory(),
+                        fileSystem,
+                        configuration.limits().maxSnapshotBytes());
                 this.recoveryManager = new RecoveryManager(snapshotStore, writeAheadLog);
                 this.snapshotWriter = new SnapshotWriter(snapshotStore);
                 this.walCompactor = new WalCompactor(writeAheadLog);
@@ -168,7 +173,9 @@ public final class TempoKvServer implements AutoCloseable {
                 commits,
                 snapshotManager,
                 new ConflictDetector(storage),
-                metrics);
+                metrics,
+                configuration.limits().maxTransactionMutations(),
+                configuration.limits().maxTransactionWriteBytes());
         this.dispatcher = new CommandDispatcher(
                 new CommandValidator(),
                 List.<CommandHandler<? extends io.tempokv.application.Command>>of(
@@ -213,8 +220,11 @@ public final class TempoKvServer implements AutoCloseable {
         String denial = configuration.nodeRole() == ServerConfiguration.NodeRole.REPLICA
                 ? "READONLY replica does not accept writes"
                 : "ERR command is not permitted";
+        String identity = configuration.authenticationEnabled()
+                ? configuration.authenticationUsername()
+                : "default";
         return AccessController.rules(Map.of(
-                "default",
+                identity,
                 new AccessController.Rule(commands, java.util.Set.of(""))),
                 denial);
     }
@@ -240,18 +250,29 @@ public final class TempoKvServer implements AutoCloseable {
             replicationManager.initialize(versions.currentVersion());
             replicationManager.start();
             respServer = new RespServer(
+                    configuration.bindAddress(),
                     configuration.respPort(),
                     metrics,
                     dispatcher,
                     authenticator,
-                    accessController);
+                    accessController,
+                    configuration.limits().maxConnectionsPerProtocol(),
+                    configuration.limits().maxRespArrayElements(),
+                    configuration.limits().maxCommandBytes(),
+                    configuration.limits().maxUsernameBytes(),
+                    configuration.limits().maxCredentialBytes());
             respServer.start();
             sqlServer = new SqlServer(
+                    configuration.bindAddress(),
                     configuration.sqlPort(),
                     metrics,
                     dispatcher,
                     authenticator,
-                    accessController);
+                    accessController,
+                    configuration.limits().maxConnectionsPerProtocol(),
+                    configuration.limits().maxCommandBytes(),
+                    configuration.limits().maxUsernameBytes(),
+                    configuration.limits().maxCredentialBytes());
             sqlServer.start();
             if (configuration.nodeRole() == ServerConfiguration.NodeRole.PRIMARY) {
                 expirationWorker.start();

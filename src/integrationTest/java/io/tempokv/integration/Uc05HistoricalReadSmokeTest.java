@@ -82,7 +82,8 @@ class Uc05HistoricalReadSmokeTest {
                     "--resp-port=0",
                     "--sql-port=0",
                     "--history-retention=" + retention,
-                    "--persistence-enabled=true"
+                    "--persistence-enabled=true",
+                    "--authentication-enabled=false"
             }, Map.of()));
         }
         Socket client() throws Exception { Socket client = new Socket("127.0.0.1", server.respPort()); client.setSoTimeout(5_000); return client; }

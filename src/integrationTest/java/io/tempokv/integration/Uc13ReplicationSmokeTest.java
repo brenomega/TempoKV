@@ -50,6 +50,21 @@ class Uc13ReplicationSmokeTest {
                         sql.readResponse().contains("READONLY replica does not accept writes"));
             }
             assertVersionsEqual(primary, replica);
+            long idleVersion = replica.metrics().gauges()
+                    .get("replication.applied_version");
+            Thread.sleep(700);
+            assertEquals(
+                    idleVersion,
+                    replica.metrics().gauges()
+                            .get("replication.applied_version"));
+            assertEquals(
+                    0L,
+                    replica.metrics().counters()
+                            .getOrDefault("replication.reconnects", 0L));
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    replica.metrics().counters()
+                            .getOrDefault(
+                                    "replication.heartbeats_received", 0L) > 0);
 
             replica.close();
             replica = null;
@@ -97,10 +112,14 @@ class Uc13ReplicationSmokeTest {
                 "--resp-port=" + ports.primaryResp(),
                 "--sql-port=" + ports.primarySql(),
                 "--replication-port=" + ports.replication(),
+                "--replication-enabled=true",
                 "--node-role=PRIMARY",
                 "--node-id=primary",
-                "--replication-token=uc13-secret",
-                "--persistence-enabled=true"
+                "--replication-token=uc13-replication-secret",
+                "--persistence-enabled=true",
+                "--authentication-enabled=false",
+                "--replication-heartbeat-interval=PT0.1S",
+                "--replication-heartbeat-timeout=PT0.5S"
         }, Map.of());
     }
 
@@ -110,12 +129,16 @@ class Uc13ReplicationSmokeTest {
                 "--resp-port=" + ports.replicaResp(),
                 "--sql-port=" + ports.replicaSql(),
                 "--replication-port=" + ports.replicaInternal(),
+                "--replication-enabled=true",
                 "--node-role=REPLICA",
                 "--node-id=replica",
                 "--primary-host=127.0.0.1",
                 "--primary-replication-port=" + ports.replication(),
-                "--replication-token=uc13-secret",
-                "--persistence-enabled=true"
+                "--replication-token=uc13-replication-secret",
+                "--persistence-enabled=true",
+                "--authentication-enabled=false",
+                "--replication-heartbeat-interval=PT0.1S",
+                "--replication-heartbeat-timeout=PT0.5S"
         }, Map.of());
     }
 

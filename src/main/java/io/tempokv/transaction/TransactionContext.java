@@ -14,12 +14,12 @@ import java.util.Set;
  * Holds one session's stable snapshot, ordered write set, and lifecycle state.
  */
 public final class TransactionContext {
-    private static final int MAX_MUTATIONS = 4_096;
-    private static final long MAX_STAGED_BYTES = 32L * 1024 * 1024;
     /** Identifies whether a context may still accept reads and staged mutations. */
     public enum State { ACTIVE, COMMITTED, ROLLED_BACK, ABORTED }
 
     private final long snapshotVersion;
+    private final int maxMutations;
+    private final long maxStagedBytes;
     private final List<Mutation> writeSet = new ArrayList<>();
     private final LinkedHashSet<String> stagedKeys = new LinkedHashSet<>();
     private long stagedBytes;
@@ -27,8 +27,20 @@ public final class TransactionContext {
 
     /** Creates an active context at a non-negative committed version. */
     public TransactionContext(long snapshotVersion) {
+        this(snapshotVersion, 4_096, 32L * 1_048_576);
+    }
+
+    /** Creates an active context with explicit mutation and byte limits. */
+    public TransactionContext(
+            long snapshotVersion, int maxMutations, long maxStagedBytes) {
         if (snapshotVersion < 0) throw new IllegalArgumentException("Snapshot version must not be negative");
+        if (maxMutations < 1 || maxStagedBytes < 1) {
+            throw new IllegalArgumentException(
+                    "Transaction limits must be positive");
+        }
         this.snapshotVersion = snapshotVersion;
+        this.maxMutations = maxMutations;
+        this.maxStagedBytes = maxStagedBytes;
     }
 
     /** Returns the greatest commit version visible to base reads. */
@@ -41,9 +53,9 @@ public final class TransactionContext {
     public synchronized void stage(Mutation mutation) {
         requireActive();
         Mutation staged = Objects.requireNonNull(mutation, "mutation");
-        if (writeSet.size() == MAX_MUTATIONS) {
+        if (writeSet.size() == maxMutations) {
             throw new IllegalArgumentException(
-                    "ERR transaction write set exceeds 4096 mutations");
+                    "ERR transaction write set exceeds configured mutation limit");
         }
         if (stagedKeys.contains(staged.key())) {
             throw new IllegalArgumentException(
@@ -52,9 +64,9 @@ public final class TransactionContext {
         long mutationBytes = staged.key().getBytes(
                 java.nio.charset.StandardCharsets.UTF_8).length
                 + (long) staged.valueSize();
-        if (mutationBytes > MAX_STAGED_BYTES - stagedBytes) {
+        if (mutationBytes > maxStagedBytes - stagedBytes) {
             throw new IllegalArgumentException(
-                    "ERR transaction write set exceeds 32 MiB");
+                    "ERR transaction write set exceeds configured byte limit");
         }
         writeSet.add(staged);
         stagedKeys.add(staged.key());

@@ -11,7 +11,6 @@ import io.tempokv.transaction.CommitCoordinator;
 import io.tempokv.transaction.CommitRecord;
 import io.tempokv.transaction.VersionGenerator;
 import java.io.IOException;
-import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -20,7 +19,6 @@ import java.util.Objects;
  * Composes role-specific replication services and exposes their lifecycle and operational state.
  */
 public final class ReplicationManager implements AutoCloseable {
-    private static final Duration INITIAL_SYNC_TIMEOUT = Duration.ofSeconds(15);
     private final ServerConfiguration configuration;
     private final ReplicaState state;
     private final AckTracker acknowledgements;
@@ -44,9 +42,10 @@ public final class ReplicationManager implements AutoCloseable {
         this.metrics = Objects.requireNonNull(metrics, "metrics");
         this.state = new ReplicaState(configuration.nodeRole());
         this.acknowledgements = new AckTracker();
-        if (!configuration.persistenceEnabled()) {
+        if (!configuration.replicationEnabled()) {
             if (configuration.nodeRole() == ServerConfiguration.NodeRole.REPLICA) {
-                throw new ConfigurationException("Replica nodes require persistence");
+                throw new ConfigurationException(
+                        "Replica nodes require replication-enabled=true");
             }
             primaryEndpoint = null;
             replicaClient = null;
@@ -57,12 +56,20 @@ public final class ReplicationManager implements AutoCloseable {
         if (configuration.nodeRole() == ServerConfiguration.NodeRole.PRIMARY) {
             primaryEndpoint = new PrimaryReplicationEndpoint(
                     configuration.replicationPort(),
+                    configuration.bindAddress(),
                     configuration.replicationToken(),
                     commits,
                     new SyncCoordinator(storage, wal),
                     snapshots,
                     acknowledgements,
-                    metrics);
+                    metrics,
+                    configuration.limits().maxReplicationPeers(),
+                    configuration.limits().maxPendingReplicaCommits(),
+                    configuration.limits().maxPendingReplicaBytes(),
+                    configuration.limits().maxSnapshotBytes(),
+                    configuration.limits().replicationSyncTimeout(),
+                    configuration.limits().replicationHeartbeatInterval(),
+                    configuration.limits().replicationHeartbeatTimeout());
             replicaClient = null;
         } else {
             primaryEndpoint = null;
@@ -77,7 +84,10 @@ public final class ReplicationManager implements AutoCloseable {
                     state,
                     snapshots,
                     metrics,
-                    Objects.requireNonNull(health, "health"));
+                    Objects.requireNonNull(health, "health"),
+                    configuration.limits().maxSnapshotBytes(),
+                    configuration.limits().replicationSyncTimeout(),
+                    configuration.limits().replicationHeartbeatTimeout());
         }
     }
 
@@ -94,7 +104,8 @@ public final class ReplicationManager implements AutoCloseable {
             primaryEndpoint.start();
             state.markCaughtUp(state.appliedVersion());
         } else if (replicaClient != null) {
-            replicaClient.startAndAwait(INITIAL_SYNC_TIMEOUT);
+            replicaClient.startAndAwait(
+                    configuration.limits().replicationSyncTimeout());
         }
     }
 

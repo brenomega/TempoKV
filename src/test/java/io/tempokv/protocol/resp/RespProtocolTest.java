@@ -24,8 +24,23 @@ class RespProtocolTest {
                         .getBytes(StandardCharsets.US_ASCII)));
 
         assertEquals(
-                "ERR RESP array exceeds 1024 elements",
+                "ERR RESP array exceeds configured limit",
                 failure.getMessage());
+    }
+
+    /** Applies configured command and array limits at the decoder allocation boundary. */
+    @Test
+    void appliesConfiguredDecoderLimits() {
+        RespDecoder decoder = new RespDecoder(32, 2);
+
+        assertThrows(
+                RespDecoder.ProtocolException.class,
+                () -> decoder.feed("*3\r\n".getBytes(
+                        StandardCharsets.US_ASCII)));
+        assertThrows(
+                RespDecoder.ProtocolException.class,
+                () -> decoder.feed(("*1\r\n$40\r\n" + "x".repeat(40)
+                        + "\r\n").getBytes(StandardCharsets.US_ASCII)));
     }
 
     /** Retains an incomplete frame, then decodes it and a concatenated following frame in order. */

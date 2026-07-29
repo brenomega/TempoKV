@@ -16,8 +16,25 @@ import java.util.Objects;
 /** Maps supported RESP request frames to typed application commands. */
 public final class RespCommandMapper {
     private static final int MAX_COMMAND_NAME_BYTES = 64;
-    private static final int MAX_USERNAME_BYTES = 128;
-    private static final int MAX_PASSWORD_BYTES = 4_096;
+    private static final int ABSOLUTE_MAX_USERNAME_BYTES = 4_096;
+    private static final int ABSOLUTE_MAX_PASSWORD_BYTES = 1_048_576;
+    private final int maxUsernameBytes;
+    private final int maxPasswordBytes;
+
+    /** Creates a mapper with the established credential defaults. */
+    public RespCommandMapper() {
+        this(128, 4_096);
+    }
+
+    /** Creates a mapper with explicit credential limits. */
+    public RespCommandMapper(int maxUsernameBytes, int maxPasswordBytes) {
+        if (maxUsernameBytes < 1 || maxPasswordBytes < 1) {
+            throw new IllegalArgumentException(
+                    "Credential limits must be positive");
+        }
+        this.maxUsernameBytes = maxUsernameBytes;
+        this.maxPasswordBytes = maxPasswordBytes;
+    }
 
     /**
      * Extracts an AUTH handshake before ordinary command mapping, or returns empty for any other
@@ -38,8 +55,8 @@ public final class RespCommandMapper {
         }
         byte[] username = argument(values, 1);
         byte[] password = argument(values, 2);
-        if (username.length > MAX_USERNAME_BYTES
-                || password.length > MAX_PASSWORD_BYTES) {
+        if (username.length > maxUsernameBytes
+                || password.length > maxPasswordBytes) {
             throw new CommandMappingException(
                     "ERR credentials exceed maximum length");
         }
@@ -187,8 +204,8 @@ public final class RespCommandMapper {
                 throw new IllegalArgumentException("ERR username must not be blank");
             }
             if (username.getBytes(StandardCharsets.UTF_8).length
-                    > MAX_USERNAME_BYTES
-                    || suppliedPassword.length > MAX_PASSWORD_BYTES) {
+                    > ABSOLUTE_MAX_USERNAME_BYTES
+                    || suppliedPassword.length > ABSOLUTE_MAX_PASSWORD_BYTES) {
                 throw new IllegalArgumentException(
                         "ERR credentials exceed maximum length");
             }

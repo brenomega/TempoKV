@@ -92,7 +92,10 @@ class Uc00StartupSmokeTest {
                 serverArguments(dataDirectory), Map.of());
         try {
             assertThrows(IOException.class,
-                    () -> TempoKvApplication.bootstrap(new String[]{"--data-dir=" + dataDirectory}, Map.of()));
+                    () -> TempoKvApplication.bootstrap(new String[]{
+                            "--data-dir=" + dataDirectory,
+                            "--authentication-enabled=false"
+                    }, Map.of()));
         } finally {
             first.close();
         }
@@ -105,7 +108,11 @@ class Uc00StartupSmokeTest {
 
         assertThrows(ConfigurationException.class,
                 () -> TempoKvApplication.bootstrap(
-                        new String[]{"--data-dir=" + dataDirectory, "--resp-port=-1"}, Map.of()));
+                        new String[]{
+                                "--data-dir=" + dataDirectory,
+                                "--resp-port=-1",
+                                "--authentication-enabled=false"
+                        }, Map.of()));
 
         assertFalse(Files.exists(dataDirectory));
     }
@@ -126,7 +133,8 @@ class Uc00StartupSmokeTest {
         return new String[]{
                 "--data-dir=" + dataDirectory,
                 "--resp-port=0",
-                "--sql-port=0"
+                "--sql-port=0",
+                "--authentication-enabled=false"
         };
     }
 

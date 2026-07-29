@@ -16,14 +16,16 @@ import java.util.Objects;
  * Exposes the bounded TempoKV SQL language over a dedicated non-blocking textual TCP endpoint.
  */
 public final class SqlServer implements AutoCloseable {
-    private static final int MAX_CONNECTIONS = 4_096;
+    private final String bindAddress;
     private final int port;
     private final MetricsRegistry metrics;
     private final CommandDispatcher dispatcher;
     private final Authenticator authenticator;
     private final AccessController accessController;
-    private final ConnectionLimiter connections =
-            new ConnectionLimiter(MAX_CONNECTIONS);
+    private final ConnectionLimiter connections;
+    private final int maxCommandBytes;
+    private final int maxUsernameBytes;
+    private final int maxCredentialBytes;
     private ServerSocketChannel socket;
     private NioEventLoop eventLoop;
 
@@ -33,11 +35,16 @@ public final class SqlServer implements AutoCloseable {
             MetricsRegistry metrics,
             CommandDispatcher dispatcher) {
         this(
+                "127.0.0.1",
                 port,
                 metrics,
                 dispatcher,
                 Authenticator.permissive(),
-                AccessController.permissive());
+                AccessController.permissive(),
+                4_096,
+                16 * 1_048_576,
+                128,
+                4_096);
     }
 
     /** Creates an endpoint with explicit application and security dependencies. */
@@ -47,6 +54,32 @@ public final class SqlServer implements AutoCloseable {
             CommandDispatcher dispatcher,
             Authenticator authenticator,
             AccessController accessController) {
+        this(
+                "127.0.0.1",
+                port,
+                metrics,
+                dispatcher,
+                authenticator,
+                accessController,
+                4_096,
+                16 * 1_048_576,
+                128,
+                4_096);
+    }
+
+    /** Creates an endpoint with explicit bind and defensive limits. */
+    public SqlServer(
+            String bindAddress,
+            int port,
+            MetricsRegistry metrics,
+            CommandDispatcher dispatcher,
+            Authenticator authenticator,
+            AccessController accessController,
+            int maxConnections,
+            int maxCommandBytes,
+            int maxUsernameBytes,
+            int maxCredentialBytes) {
+        this.bindAddress = Objects.requireNonNull(bindAddress, "bindAddress");
         this.port = port;
         this.metrics = Objects.requireNonNull(metrics, "metrics");
         this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
@@ -54,6 +87,10 @@ public final class SqlServer implements AutoCloseable {
                 Objects.requireNonNull(authenticator, "authenticator");
         this.accessController =
                 Objects.requireNonNull(accessController, "accessController");
+        this.connections = new ConnectionLimiter(maxConnections);
+        this.maxCommandBytes = maxCommandBytes;
+        this.maxUsernameBytes = maxUsernameBytes;
+        this.maxCredentialBytes = maxCredentialBytes;
     }
 
     /** Binds the configured socket and begins serving semicolon-terminated SQL statements. */
@@ -63,7 +100,7 @@ public final class SqlServer implements AutoCloseable {
         }
         socket = ServerSocketChannel.open();
         try {
-            socket.bind(new InetSocketAddress(port));
+            socket.bind(new InetSocketAddress(bindAddress, port));
             eventLoop = new NioEventLoop(
                     ignored -> metrics.incrementCounter(
                             "sql.event_loop_failures"));
@@ -85,7 +122,10 @@ public final class SqlServer implements AutoCloseable {
                                     new SqlCompiler(),
                                     executor,
                                     new SqlResultEncoder(),
-                                    metrics),
+                                    metrics,
+                                    maxCommandBytes,
+                                    maxUsernameBytes,
+                                    maxCredentialBytes),
                             () -> metrics.setGauge(
                                     "sql.connections_active",
                                     connections.release()));

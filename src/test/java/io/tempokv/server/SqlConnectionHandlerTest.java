@@ -33,7 +33,7 @@ class SqlConnectionHandlerTest {
 
         assertEquals(1, responses.size());
         assertTrue(new String(responses.getFirst(), StandardCharsets.UTF_8)
-                .contains("statement exceeds 1 MiB"));
+                .contains("statement exceeds configured limit"));
 
         handler.onBytes("PING;".getBytes(StandardCharsets.UTF_8), responses::add);
 

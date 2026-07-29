@@ -106,6 +106,47 @@ class SnapshotStoreTest {
         assertEquals(1, snapshots.load().orElseThrow().version());
     }
 
+    /** Enforces the configured payload bound during serialization and preserves prior state. */
+    @Test
+    void enforcesSnapshotLimitBeforePublicationAndCleansTemporaryFile()
+            throws Exception {
+        FileSystemAdapter files = new FileSystemAdapter();
+        MvccStore store = new MvccStore();
+        store.apply(record(1, Mutation.put("key", bytes("first"))));
+        SnapshotStore generous = new SnapshotStore(directory, files);
+        generous.save(store.snapshot());
+
+        store.apply(record(
+                2,
+                Mutation.put("key", bytes("second-value"))));
+        int payloadBytes =
+                generous.encodeForTransfer(store.snapshot()).length - 14;
+        SnapshotStore exact =
+                new SnapshotStore(directory, files, payloadBytes);
+        exact.save(store.snapshot());
+        assertEquals(2, exact.load().orElseThrow().version());
+
+        store.apply(record(
+                3,
+                Mutation.put("key", bytes("third-value-is-larger"))));
+        int nextPayloadBytes =
+                generous.encodeForTransfer(store.snapshot()).length - 14;
+        SnapshotStore tooSmall =
+                new SnapshotStore(directory, files, nextPayloadBytes - 1L);
+
+        assertThrows(IOException.class, () -> tooSmall.save(store.snapshot()));
+        assertThrows(
+                IOException.class,
+                () -> tooSmall.encodeForTransfer(store.snapshot()));
+        assertEquals(2, generous.load().orElseThrow().version());
+        assertTrue(files.listRegularFiles(
+                directory.resolve("snapshots"), ".tmp").isEmpty());
+        assertTrue(files.listRegularFiles(
+                directory.resolve("snapshots"), ".snapshot").stream()
+                .noneMatch(path -> path.getFileName().toString()
+                        .contains("00000000000000000003")));
+    }
+
     private static CommitRecord record(long version, Mutation mutation) {
         return new CommitRecord(version, NOW, List.of(mutation));
     }

@@ -19,6 +19,8 @@ public final class TransactionManager {
     private final SnapshotManager snapshots;
     private final ConflictDetector conflicts;
     private final MetricsRegistry metrics;
+    private final int maxMutations;
+    private final long maxWriteBytes;
 
     /** Creates the session transaction service over the node's shared commit pipeline. */
     public TransactionManager(
@@ -27,11 +29,36 @@ public final class TransactionManager {
             SnapshotManager snapshots,
             ConflictDetector conflicts,
             MetricsRegistry metrics) {
+        this(
+                storage,
+                commits,
+                snapshots,
+                conflicts,
+                metrics,
+                4_096,
+                32L * 1_048_576);
+    }
+
+    /** Creates the transaction service with explicit write-set limits. */
+    public TransactionManager(
+            StorageEngine storage,
+            CommitCoordinator commits,
+            SnapshotManager snapshots,
+            ConflictDetector conflicts,
+            MetricsRegistry metrics,
+            int maxMutations,
+            long maxWriteBytes) {
         this.storage = Objects.requireNonNull(storage, "storage");
         this.commits = Objects.requireNonNull(commits, "commits");
         this.snapshots = Objects.requireNonNull(snapshots, "snapshots");
         this.conflicts = Objects.requireNonNull(conflicts, "conflicts");
         this.metrics = Objects.requireNonNull(metrics, "metrics");
+        if (maxMutations < 1 || maxWriteBytes < 1) {
+            throw new IllegalArgumentException(
+                    "Transaction limits must be positive");
+        }
+        this.maxMutations = maxMutations;
+        this.maxWriteBytes = maxWriteBytes;
     }
 
     /** Opens one snapshot and attaches its context to a session with no active transaction. */
@@ -39,7 +66,8 @@ public final class TransactionManager {
         Objects.requireNonNull(session, "session");
         if (session.transaction().isPresent()) throw new IllegalStateException("ERR transaction already active");
         long snapshot = snapshots.openSnapshot();
-        TransactionContext context = new TransactionContext(snapshot);
+        TransactionContext context =
+                new TransactionContext(snapshot, maxMutations, maxWriteBytes);
         try {
             session.attachTransaction(context, () -> abortDetached(session, context));
         } catch (RuntimeException failure) {

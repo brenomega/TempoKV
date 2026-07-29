@@ -73,7 +73,8 @@ class Uc11SnapshotCompactionSmokeTest {
                 "--data-dir=" + directory.resolve("server-data"),
                 "--resp-port=0",
                 "--sql-port=0",
-                "--persistence-enabled=true"
+                "--persistence-enabled=true",
+                "--authentication-enabled=false"
         }, java.util.Map.of());
     }
 

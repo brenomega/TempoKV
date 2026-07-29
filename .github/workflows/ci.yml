@@ -24,6 +24,8 @@ jobs:
         run: ./gradlew --no-daemon clean build
 
       - name: Validate Compose configuration
+        env:
+          TEMPOKV_REPLICATION_TOKEN: ci-explicit-replication-secret
         run: docker compose config
 
       - name: Build production image
@@ -34,7 +36,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes redis-tools
-          container_id="$(docker run --detach --publish 127.0.0.1::6379 tempokv:ci)"
+          container_id="$(docker run --detach \
+            --env TEMPOKV_BIND_ADDRESS=0.0.0.0 \
+            --env TEMPOKV_ALLOW_INSECURE_REMOTE_TRANSPORT=true \
+            --env TEMPOKV_AUTHENTICATION_ENABLED=false \
+            --publish 127.0.0.1::6379 tempokv:ci)"
           redis_id="$(docker run --detach --publish 127.0.0.1::6379 redis:7-alpine)"
           trap 'docker rm --force "$container_id" "$redis_id"' EXIT
           port="$(docker inspect --format='{{(index (index .NetworkSettings.Ports "6379/tcp") 0).HostPort}}' "$container_id")"

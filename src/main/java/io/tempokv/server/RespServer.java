@@ -11,14 +11,17 @@ import java.util.Objects;
 
 /** Exposes RESP over TCP without constructing application or storage components. */
 public final class RespServer implements AutoCloseable {
-    private static final int MAX_CONNECTIONS = 4_096;
+    private final String bindAddress;
     private final int port;
     private final MetricsRegistry metrics;
     private final CommandDispatcher dispatcher;
     private final Authenticator authenticator;
     private final AccessController accessController;
-    private final ConnectionLimiter connections =
-            new ConnectionLimiter(MAX_CONNECTIONS);
+    private final ConnectionLimiter connections;
+    private final int maxArrayElements;
+    private final int maxCommandBytes;
+    private final int maxUsernameBytes;
+    private final int maxCredentialBytes;
     private ServerSocketChannel socket;
     private NioEventLoop eventLoop;
 
@@ -26,11 +29,17 @@ public final class RespServer implements AutoCloseable {
     public RespServer(
             int port, MetricsRegistry metrics, CommandDispatcher dispatcher) {
         this(
+                "127.0.0.1",
                 port,
                 metrics,
                 dispatcher,
                 Authenticator.permissive(),
-                AccessController.permissive());
+                AccessController.permissive(),
+                4_096,
+                1_024,
+                16 * 1_048_576,
+                128,
+                4_096);
     }
 
     /** Creates an endpoint over explicit application and security dependencies. */
@@ -40,11 +49,44 @@ public final class RespServer implements AutoCloseable {
             CommandDispatcher dispatcher,
             Authenticator authenticator,
             AccessController accessController) {
+        this(
+                "127.0.0.1",
+                port,
+                metrics,
+                dispatcher,
+                authenticator,
+                accessController,
+                4_096,
+                1_024,
+                16 * 1_048_576,
+                128,
+                4_096);
+    }
+
+    /** Creates an endpoint with explicit bind and defensive limits. */
+    public RespServer(
+            String bindAddress,
+            int port,
+            MetricsRegistry metrics,
+            CommandDispatcher dispatcher,
+            Authenticator authenticator,
+            AccessController accessController,
+            int maxConnections,
+            int maxArrayElements,
+            int maxCommandBytes,
+            int maxUsernameBytes,
+            int maxCredentialBytes) {
+        this.bindAddress = Objects.requireNonNull(bindAddress, "bindAddress");
         this.port = port;
         this.metrics = Objects.requireNonNull(metrics, "metrics");
         this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
         this.authenticator = Objects.requireNonNull(authenticator, "authenticator");
         this.accessController = Objects.requireNonNull(accessController, "accessController");
+        this.connections = new ConnectionLimiter(maxConnections);
+        this.maxArrayElements = maxArrayElements;
+        this.maxCommandBytes = maxCommandBytes;
+        this.maxUsernameBytes = maxUsernameBytes;
+        this.maxCredentialBytes = maxCredentialBytes;
     }
 
     /** Binds the socket and starts serving RESP clients. */
@@ -52,7 +94,7 @@ public final class RespServer implements AutoCloseable {
         if (eventLoop != null) return;
         socket = ServerSocketChannel.open();
         try {
-            socket.bind(new InetSocketAddress(port));
+            socket.bind(new InetSocketAddress(bindAddress, port));
             eventLoop = new NioEventLoop(
                     ignored -> metrics.incrementCounter(
                             "resp.event_loop_failures"));
@@ -71,7 +113,11 @@ public final class RespServer implements AutoCloseable {
                                     authenticator,
                                     accessController,
                                     dispatcher,
-                                    metrics),
+                                    metrics,
+                                    maxArrayElements,
+                                    maxCommandBytes,
+                                    maxUsernameBytes,
+                                    maxCredentialBytes),
                             () -> metrics.setGauge(
                                     "resp.connections_active",
                                     connections.release()));

@@ -25,7 +25,8 @@ class Uc02RespPingSmokeTest {
         TempoKvServer server = TempoKvApplication.bootstrap(new String[]{
                 "--data-dir=" + temporaryDirectory.resolve("data"),
                 "--resp-port=0",
-                "--sql-port=0"
+                "--sql-port=0",
+                "--authentication-enabled=false"
         }, Map.of());
         try (Socket client = new Socket("127.0.0.1", server.respPort())) {
             client.setSoTimeout(5000);
@@ -47,7 +48,8 @@ class Uc02RespPingSmokeTest {
         TempoKvServer server = TempoKvApplication.bootstrap(new String[]{
                 "--data-dir=" + temporaryDirectory.resolve("concurrent-data"),
                 "--resp-port=0",
-                "--sql-port=0"
+                "--sql-port=0",
+                "--authentication-enabled=false"
         }, Map.of());
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var requests = java.util.stream.IntStream.range(0, 200)
@@ -77,7 +79,8 @@ class Uc02RespPingSmokeTest {
         TempoKvServer server = TempoKvApplication.bootstrap(new String[]{
                 "--data-dir=" + temporaryDirectory.resolve("slow-client-data"),
                 "--resp-port=0",
-                "--sql-port=0"
+                "--sql-port=0",
+                "--authentication-enabled=false"
         }, Map.of());
         try (Socket slow = new Socket("127.0.0.1", server.respPort());
                 Socket responsive =

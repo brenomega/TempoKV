@@ -10,7 +10,6 @@ import io.tempokv.transaction.CommitRecord;
 import io.tempokv.transaction.Mutation;
 import io.tempokv.transaction.VersionGenerator;
 import java.io.IOException;
-import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -24,16 +23,14 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** Verifies the ordering and synchronization decisions that protect replica durability. */
 class ReplicationComponentsTest {
-    /** Leaves a caught-up replica connected while an idle primary emits no heartbeat frames. */
+    /** Keeps the heartbeat frame distinct from durable commit and acknowledgement values. */
     @Test
-    void disablesInitialSyncTimeoutAfterCatchUp() throws Exception {
-        try (Socket socket = new Socket()) {
-            socket.setSoTimeout(30_000);
-
-            ReplicaClient.disableCatchUpTimeout(socket);
-
-            assertEquals(0, socket.getSoTimeout());
-        }
+    void heartbeatDoesNotAliasCommitOrAcknowledgement() {
+        org.junit.jupiter.api.Assertions.assertNotEquals(
+                PrimaryReplicationEndpoint.COMMIT,
+                PrimaryReplicationEndpoint.HEARTBEAT);
+        org.junit.jupiter.api.Assertions.assertTrue(
+                PrimaryReplicationEndpoint.HEARTBEAT_ACK < 0);
     }
 
     @TempDir Path directory;

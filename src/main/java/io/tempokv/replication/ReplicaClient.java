@@ -21,7 +21,6 @@ import java.util.concurrent.TimeUnit;
  */
 public final class ReplicaClient implements AutoCloseable {
     private static final Duration RECONNECT_DELAY = Duration.ofMillis(200);
-    private static final int SOCKET_TIMEOUT_MILLIS = 30_000;
     private final String host;
     private final int port;
     private final String token;
@@ -31,6 +30,9 @@ public final class ReplicaClient implements AutoCloseable {
     private final SnapshotStore snapshots;
     private final MetricsRegistry metrics;
     private final ServerHealthService health;
+    private final int maxFrameBytes;
+    private final Duration synchronizationTimeout;
+    private final Duration heartbeatTimeout;
     private final WalRecordCodec walCodec = new WalRecordCodec();
     private final CountDownLatch initialCatchUp = new CountDownLatch(1);
     private volatile boolean running;
@@ -48,6 +50,35 @@ public final class ReplicaClient implements AutoCloseable {
             SnapshotStore snapshots,
             MetricsRegistry metrics,
             ServerHealthService health) {
+        this(
+                host,
+                port,
+                token,
+                nodeId,
+                applier,
+                state,
+                snapshots,
+                metrics,
+                health,
+                64L * 1_048_576,
+                Duration.ofSeconds(15),
+                Duration.ofSeconds(15));
+    }
+
+    /** Creates a client with explicit snapshot and heartbeat limits. */
+    public ReplicaClient(
+            String host,
+            int port,
+            String token,
+            String nodeId,
+            ReplicaApplier applier,
+            ReplicaState state,
+            SnapshotStore snapshots,
+            MetricsRegistry metrics,
+            ServerHealthService health,
+            long maxSnapshotBytes,
+            Duration synchronizationTimeout,
+            Duration heartbeatTimeout) {
         this.host = Objects.requireNonNull(host, "host");
         this.port = port;
         this.token = Objects.requireNonNull(token, "token");
@@ -57,6 +88,11 @@ public final class ReplicaClient implements AutoCloseable {
         this.snapshots = Objects.requireNonNull(snapshots, "snapshots");
         this.metrics = Objects.requireNonNull(metrics, "metrics");
         this.health = Objects.requireNonNull(health, "health");
+        this.maxFrameBytes = Math.toIntExact(maxSnapshotBytes + 14L);
+        this.synchronizationTimeout = Objects.requireNonNull(
+                synchronizationTimeout, "synchronizationTimeout");
+        this.heartbeatTimeout =
+                Objects.requireNonNull(heartbeatTimeout, "heartbeatTimeout");
     }
 
     /**
@@ -109,7 +145,8 @@ public final class ReplicaClient implements AutoCloseable {
             activeSocket = socket;
             socket.connect(new InetSocketAddress(host, port), 2_000);
             socket.setTcpNoDelay(true);
-            socket.setSoTimeout(SOCKET_TIMEOUT_MILLIS);
+            socket.setSoTimeout(Math.toIntExact(
+                    synchronizationTimeout.toMillis()));
             state.markSynchronizing();
             metrics.setGauge("replication.connected", 1);
             try (DataInputStream input = new DataInputStream(socket.getInputStream());
@@ -120,19 +157,14 @@ public final class ReplicaClient implements AutoCloseable {
                     if (message < 0) throw new EOFException("Primary closed replication stream");
                     process(message, input, output);
                     if (message == PrimaryReplicationEndpoint.CAUGHT_UP) {
-                        // An idle, healthy primary sends no heartbeat. Keep the timeout only
-                        // around handshake/catch-up so inactivity does not cause reconnect churn.
-                        disableCatchUpTimeout(socket);
+                        socket.setSoTimeout(Math.toIntExact(
+                                heartbeatTimeout.toMillis()));
                     }
                 }
             }
         } finally {
             activeSocket = null;
         }
-    }
-
-    static void disableCatchUpTimeout(Socket socket) throws IOException {
-        Objects.requireNonNull(socket, "socket").setSoTimeout(0);
     }
 
     private void process(
@@ -162,6 +194,11 @@ public final class ReplicaClient implements AutoCloseable {
                 initialCatchUp.countDown();
                 health.markReady();
             }
+            case PrimaryReplicationEndpoint.HEARTBEAT -> {
+                output.writeLong(PrimaryReplicationEndpoint.HEARTBEAT_ACK);
+                output.flush();
+                metrics.incrementCounter("replication.heartbeats_received");
+            }
             case PrimaryReplicationEndpoint.ERROR ->
                     throw new IOException("Primary rejected replication: " + input.readUTF());
             default -> throw new IOException("Unknown replication message: " + message);
@@ -177,9 +214,9 @@ public final class ReplicaClient implements AutoCloseable {
         output.flush();
     }
 
-    private static byte[] readFrame(DataInputStream input) throws IOException {
+    private byte[] readFrame(DataInputStream input) throws IOException {
         int size = input.readInt();
-        if (size < 0 || size > PrimaryReplicationEndpoint.MAX_FRAME_BYTES) {
+        if (size < 0 || size > maxFrameBytes) {
             throw new IOException("Invalid replication frame size");
         }
         byte[] payload = input.readNBytes(size);
@@ -213,10 +250,26 @@ public final class ReplicaClient implements AutoCloseable {
     @Override
     public synchronized void close() throws IOException {
         running = false;
+        IOException failure = null;
         Socket socket = activeSocket;
-        if (socket != null) socket.close();
+        if (socket != null) {
+            try {
+                socket.close();
+            } catch (IOException closeFailure) {
+                failure = closeFailure;
+            }
+        }
         Thread thread = worker;
-        if (thread != null) thread.interrupt();
+        worker = null;
+        if (thread != null) {
+            thread.interrupt();
+            try {
+                thread.join(5_000);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
         metrics.setGauge("replication.connected", 0);
+        if (failure != null) throw failure;
     }
 }

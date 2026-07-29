@@ -142,6 +142,63 @@ class MvccStoreTest {
                 store.history("key").getFirst().version());
     }
 
+    /** Uses sparse checkpoints for deep non-contiguous version and timestamp lookups. */
+    @Test
+    void resolvesSparseDeepHistoryAcrossKeysAndMissingPoints() {
+        MvccStore store = new MvccStore();
+        for (long version = 1; version <= 512; version++) {
+            String key = version % 2 == 0 ? "even" : "odd";
+            store.apply(new CommitRecord(
+                    version,
+                    NOW.plusMillis(version),
+                    List.of(Mutation.put(key, bytes("v" + version)))));
+        }
+
+        assertEquals(
+                512L,
+                store.historical("even", 512L, null).value().version());
+        assertEquals(
+                256L,
+                store.historical("even", 257L, null).value().version());
+        assertEquals(
+                2L,
+                store.historical("even", 2L, null).value().version());
+        assertEquals(
+                256L,
+                store.historical(
+                        "even", null, NOW.plusMillis(257))
+                        .value().version());
+        assertEquals(
+                2L,
+                store.historical(
+                        "even", null, NOW.plusMillis(2))
+                        .value().version());
+        assertEquals(
+                StorageEngine.HistoricalValue.Status.KEY_NOT_FOUND,
+                store.historical("even", 1L, null).status());
+
+        VersionChain chain = store.snapshot().chains().get("even");
+        assertTrue(chain.checkpointCount() > 0);
+        assertTrue(chain.checkpointCount() <= 256 / 64);
+    }
+
+    /** Falls back to exact traversal if restored timestamps are not monotonic. */
+    @Test
+    void preservesTimestampSemanticsForNonMonotonicClockHistory() {
+        VersionChain chain = VersionChain.fromNewestFirst(List.of(
+                value(3, NOW.plusSeconds(1)),
+                value(2, NOW.plusSeconds(3)),
+                value(1, NOW)));
+
+        assertEquals(
+                3L,
+                chain.atTimestamp(NOW.plusSeconds(2))
+                        .orElseThrow().version());
+        assertEquals(
+                1L,
+                chain.atTimestamp(NOW).orElseThrow().version());
+    }
+
     /** Keeps current reads valid while another thread repeatedly publishes a new immutable head. */
     @Test
     void readsRemainConsistentDuringConcurrentHeadPublication() throws Exception {
@@ -201,4 +258,9 @@ class MvccStoreTest {
     }
 
     private static byte[] bytes(String value) { return value.getBytes(StandardCharsets.UTF_8); }
+
+    private static VersionedValue value(long version, Instant committedAt) {
+        return new VersionedValue(
+                version, bytes("v" + version), false, committedAt, null, null);
+    }
 }

@@ -21,7 +21,10 @@ import java.util.function.Consumer;
  */
 public final class SqlConnectionHandler
         implements ClientConnection.ConnectionProcessor {
-    private static final int MAX_STATEMENT_BYTES = 1_048_576;
+    private final Authenticator authenticator;
+    private final int maxStatementBytes;
+    private final int maxUsernameBytes;
+    private final int maxCredentialBytes;
     private final Session session = new Session();
     private final SqlCompiler compiler;
     private final PlanExecutor executor;
@@ -39,12 +42,36 @@ public final class SqlConnectionHandler
             PlanExecutor executor,
             SqlResultEncoder encoder,
             MetricsRegistry metrics) {
-        Objects.requireNonNull(authenticator, "authenticator")
-                .authenticate(session);
+        this(
+                authenticator,
+                compiler,
+                executor,
+                encoder,
+                metrics,
+                16 * 1_048_576,
+                128,
+                4_096);
+    }
+
+    /** Creates a SQL handler with explicit command and credential limits. */
+    public SqlConnectionHandler(
+            Authenticator authenticator,
+            SqlCompiler compiler,
+            PlanExecutor executor,
+            SqlResultEncoder encoder,
+            MetricsRegistry metrics,
+            int maxCommandBytes,
+            int maxUsernameBytes,
+            int maxCredentialBytes) {
+        this.authenticator = Objects.requireNonNull(authenticator, "authenticator");
+        this.authenticator.authenticate(session);
         this.compiler = Objects.requireNonNull(compiler, "compiler");
         this.executor = Objects.requireNonNull(executor, "executor");
         this.encoder = Objects.requireNonNull(encoder, "encoder");
         this.metrics = Objects.requireNonNull(metrics, "metrics");
+        this.maxStatementBytes = Math.min(maxCommandBytes, 1_048_576);
+        this.maxUsernameBytes = maxUsernameBytes;
+        this.maxCredentialBytes = maxCredentialBytes;
     }
 
     /**
@@ -94,12 +121,12 @@ public final class SqlConnectionHandler
     }
 
     private void ensureBound(Consumer<byte[]> responses) {
-        if (pending.size() <= MAX_STATEMENT_BYTES) {
+        if (pending.size() <= maxStatementBytes) {
             return;
         }
         responses.accept(encoder.encodeError(new SqlException(
                 SqlException.Kind.LEXICAL,
-                "statement exceeds 1 MiB",
+                "statement exceeds configured limit",
                 1,
                 1)));
         metrics.incrementCounter("sql.errors.lexical");
@@ -111,8 +138,12 @@ public final class SqlConnectionHandler
         long started = System.nanoTime();
         try {
             String sql = decodeUtf8(pending.toByteArray());
-            responses.accept(encoder.encode(
-                    executor.execute(compiler.compile(sql), session)));
+            if (isAuthentication(sql)) {
+                authenticate(sql, responses);
+            } else {
+                responses.accept(encoder.encode(
+                        executor.execute(compiler.compile(sql), session)));
+            }
             metrics.incrementCounter("sql.statements");
         } catch (SqlException exception) {
             metrics.incrementCounter(
@@ -135,6 +166,41 @@ public final class SqlConnectionHandler
                     Duration.ofNanos(System.nanoTime() - started));
             reset();
         }
+    }
+
+    private static boolean isAuthentication(String sql) {
+        return sql.stripLeading().regionMatches(
+                true, 0, "AUTH ", 0, "AUTH ".length());
+    }
+
+    private void authenticate(String sql, Consumer<byte[]> responses) {
+        String statement = sql.strip();
+        if (!statement.endsWith(";")) {
+            throw new IllegalArgumentException(
+                    "AUTH statement must end with semicolon");
+        }
+        String[] credentials = statement
+                .substring("AUTH".length(), statement.length() - 1)
+                .trim()
+                .split("\\s+", 2);
+        if (credentials.length != 2
+                || credentials[0].getBytes(StandardCharsets.UTF_8).length
+                        > maxUsernameBytes
+                || credentials[1].getBytes(StandardCharsets.UTF_8).length
+                        > maxCredentialBytes) {
+            throw new IllegalArgumentException(
+                    "Invalid AUTH credentials");
+        }
+        boolean accepted = authenticator.authenticate(
+                session,
+                credentials[0],
+                credentials[1].getBytes(StandardCharsets.UTF_8));
+        if (!accepted) {
+            throw new IllegalArgumentException("Invalid AUTH credentials");
+        }
+        responses.accept(encoder.encode(
+                io.tempokv.protocol.sql.SqlResult.row(
+                        java.util.List.of("status"), "OK")));
     }
 
     private static String decodeUtf8(byte[] bytes) {

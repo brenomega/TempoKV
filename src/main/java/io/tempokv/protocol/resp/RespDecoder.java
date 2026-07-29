@@ -8,16 +8,33 @@ import java.util.List;
 
 /** Decodes complete RESP2 frames while retaining incomplete bytes for a later read. */
 public final class RespDecoder {
-    private static final int MAX_FRAME_BYTES = 16 * 1024 * 1024;
-    private static final int MAX_ARRAY_ELEMENTS = 1_024;
     private static final int MAX_NESTING_DEPTH = 128;
+    private final int maxFrameBytes;
+    private final int maxArrayElements;
     private final ByteArrayOutputStream pending = new ByteArrayOutputStream();
+
+    /** Creates a decoder with the established conservative defaults. */
+    public RespDecoder() {
+        this(16 * 1_048_576, 1_024);
+    }
+
+    /** Creates a decoder with explicit command and array limits. */
+    public RespDecoder(int maxFrameBytes, int maxArrayElements) {
+        if (maxFrameBytes < 1 || maxArrayElements < 1) {
+            throw new IllegalArgumentException("RESP limits must be positive");
+        }
+        this.maxFrameBytes = maxFrameBytes;
+        this.maxArrayElements = maxArrayElements;
+    }
 
     /** Adds received bytes and returns every complete frame in wire order. */
     public List<RespFrame> feed(byte[] bytes) throws ProtocolException {
         try {
             if (bytes.length > 0) pending.writeBytes(bytes);
-            if (pending.size() > MAX_FRAME_BYTES) throw new ProtocolException("ERR protocol frame exceeds 16 MiB");
+            if (pending.size() > maxFrameBytes) {
+                throw new ProtocolException(
+                        "ERR protocol frame exceeds configured limit");
+            }
             byte[] input = pending.toByteArray();
             int offset = 0;
             List<RespFrame> frames = new ArrayList<>();
@@ -39,7 +56,7 @@ public final class RespDecoder {
     /** Returns whether a partial frame is waiting for additional bytes. */
     public boolean hasPendingBytes() { return pending.size() > 0; }
 
-    private static ParseResult parse(byte[] input, int offset, int depth) throws ProtocolException {
+    private ParseResult parse(byte[] input, int offset, int depth) throws ProtocolException {
         if (offset >= input.length) return null;
         if (depth > MAX_NESTING_DEPTH) {
             throw new ProtocolException("ERR RESP nesting exceeds 128 levels");
@@ -54,19 +71,19 @@ public final class RespDecoder {
         };
     }
 
-    private static ParseResult lineFrame(byte[] input, int offset, LineFactory factory) throws ProtocolException {
+    private ParseResult lineFrame(byte[] input, int offset, LineFactory factory) throws ProtocolException {
         Line line = line(input, offset + 1);
         return line == null ? null : new ParseResult(factory.create(line.value()), line.nextOffset());
     }
 
-    private static ParseResult integerFrame(byte[] input, int offset) throws ProtocolException {
+    private ParseResult integerFrame(byte[] input, int offset) throws ProtocolException {
         Line line = line(input, offset + 1);
         if (line == null) return null;
         try { return new ParseResult(new RespFrame.IntegerValue(Long.parseLong(line.value())), line.nextOffset()); }
         catch (NumberFormatException exception) { throw new ProtocolException("ERR invalid RESP integer"); }
     }
 
-    private static ParseResult bulkFrame(byte[] input, int offset) throws ProtocolException {
+    private ParseResult bulkFrame(byte[] input, int offset) throws ProtocolException {
         Line line = line(input, offset + 1);
         if (line == null) return null;
         int length = length(line.value());
@@ -80,14 +97,15 @@ public final class RespDecoder {
         return new ParseResult(new RespFrame.BulkString(Arrays.copyOfRange(input, line.nextOffset(), line.nextOffset() + length)), (int) end);
     }
 
-    private static ParseResult arrayFrame(byte[] input, int offset, int depth) throws ProtocolException {
+    private ParseResult arrayFrame(byte[] input, int offset, int depth) throws ProtocolException {
         Line line = line(input, offset + 1);
         if (line == null) return null;
         int count = length(line.value());
         if (count == -1) return new ParseResult(new RespFrame.NullValue(), line.nextOffset());
         if (count < 0) throw new ProtocolException("ERR invalid array length");
-        if (count > MAX_ARRAY_ELEMENTS) {
-            throw new ProtocolException("ERR RESP array exceeds 1024 elements");
+        if (count > maxArrayElements) {
+            throw new ProtocolException(
+                    "ERR RESP array exceeds configured limit");
         }
         List<RespFrame> values = new ArrayList<>(count);
         int current = line.nextOffset();
@@ -99,8 +117,8 @@ public final class RespDecoder {
         return new ParseResult(new RespFrame.Array(values), current);
     }
 
-    private static int length(String value) throws ProtocolException {
-        try { int parsed = Integer.parseInt(value); if (parsed > MAX_FRAME_BYTES) throw new ProtocolException("ERR protocol frame exceeds 16 MiB"); return parsed; }
+    private int length(String value) throws ProtocolException {
+        try { int parsed = Integer.parseInt(value); if (parsed > maxFrameBytes) throw new ProtocolException("ERR protocol frame exceeds configured limit"); return parsed; }
         catch (NumberFormatException exception) { throw new ProtocolException("ERR invalid RESP length"); }
     }
 

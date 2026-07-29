@@ -113,7 +113,24 @@ class TransactionManagerTest {
                 IllegalArgumentException.class,
                 () -> context.stage(Mutation.tombstone("overflow")));
 
-        assertEquals("ERR transaction write set exceeds 4096 mutations", failure.getMessage());
+        assertEquals(
+                "ERR transaction write set exceeds configured mutation limit",
+                failure.getMessage());
+    }
+
+    /** Propagates configured mutation and byte limits into each new context. */
+    @Test
+    void appliesConfiguredTransactionLimits() {
+        TransactionContext mutations = new TransactionContext(0, 1, 1_024);
+        mutations.stage(Mutation.tombstone("first"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> mutations.stage(Mutation.tombstone("second")));
+
+        TransactionContext bytes = new TransactionContext(0, 10, 4);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> bytes.stage(Mutation.put("key", bytes("value"))));
     }
 
     /** Rejects a repeated key before it can create a WAL record storage cannot apply. */
