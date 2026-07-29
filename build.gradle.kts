@@ -36,7 +36,7 @@ dependencies {
     jflex("de.jflex:jflex:1.9.1")
     javaCup("com.github.vbmacher:java-cup:11b-20160615")
 
-    testImplementation(platform("org.junit:junit-bom:5.12.0"))
+    testImplementation(platform("org.junit:junit-bom:6.1.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testImplementation("org.jetbrains.kotlinx:lincheck:2.39")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
