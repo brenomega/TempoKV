@@ -32,9 +32,9 @@ application {
 }
 
 dependencies {
-    implementation("com.github.vbmacher:java-cup-runtime:11b-20160615")
+    implementation("com.github.vbmacher:java-cup-runtime:11b-20160615-3")
     jflex("de.jflex:jflex:1.9.1")
-    javaCup("com.github.vbmacher:java-cup:11b-20160615")
+    javaCup("com.github.vbmacher:java-cup:11b-20160615-3")
 
     testImplementation(platform("org.junit:junit-bom:5.12.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
